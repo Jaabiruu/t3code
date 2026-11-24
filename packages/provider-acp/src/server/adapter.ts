@@ -39,7 +39,11 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { HTML_RENDER_TOOL_NAME } from "@t3tools/shared/htmlRender";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { type SelfInvocation, selfInvocationArgs } from "@t3tools/shared/nodeRuntime";
-import { resolveT3McpToolId } from "@t3tools/shared/t3McpToolPresentation";
+import {
+  canonicalizeT3McpToolName,
+  shouldAutoApproveT3McpTool,
+} from "@t3tools/shared/t3McpAutoApprove";
+import { resolveT3McpToolId, T3_MCP_SERVER_ALIASES } from "@t3tools/shared/t3McpToolPresentation";
 import {
   compactDynamicToolOutput,
   compactT3McpToolOutput,
@@ -101,6 +105,7 @@ import {
   acpClientExecuteDisposition,
   acpMcpToolApprovalElicitationDisposition,
   acpPermissionDisposition,
+  extractServerQualifiedT3McpPermissionTool,
   type AcpPermissionDisposition,
   makeAcpClientPolicyGrants,
   unknownRecord,
@@ -1648,7 +1653,7 @@ function selectPermissionOptionId(
 ): string | undefined {
   const optionIdOfKind = (kind: EffectAcpSchema.PermissionOption["kind"]) =>
     request.options.find((option) => option.kind === kind)?.optionId;
-  if (decision === "acceptForSession") {
+  if (decision === "acceptForSession" || decision === "acceptAlways") {
     // Agents may offer only allow_once, and answering "cancelled" would stop the turn the user approved.
     return optionIdOfKind("allow_always") ?? optionIdOfKind("allow_once");
   }
@@ -1663,6 +1668,16 @@ function selectAutoApprovedPermissionOption(
     selectPermissionOptionId(request, "accept") ??
     selectPermissionOptionId(request, "acceptForSession")
   );
+}
+
+function t3McpApprovalOptions(toolName: string): ReadonlyArray<ProviderApprovalOption> {
+  return [
+    { decision: "cancel", label: "Cancel" },
+    { decision: "decline", label: "Decline" },
+    { decision: "acceptForSession", label: `Allow ${toolName} this session` },
+    { decision: "acceptAlways", label: `Always allow ${toolName}` },
+    { decision: "accept", label: "Allow" },
+  ];
 }
 
 interface ActiveTextSegment {
@@ -6511,7 +6526,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         ) {
           yield* closeTextStreams(context);
           const parsed = parsePermissionRequest(params);
-          const approvalOptions = flavor.approvalOptions?.(params);
+          const t3McpTool = extractServerQualifiedT3McpPermissionTool(params);
+          const approvalOptions =
+            t3McpTool !== undefined
+              ? t3McpApprovalOptions(t3McpTool)
+              : flavor.approvalOptions?.(params);
           const nativeRequestId = params.toolCall.toolCallId;
           const requestId = yield* idAllocator.allocate.runtimeRequest({
             driver,
@@ -7559,13 +7578,34 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   // tool already seen under the same id so policy can tell a
                   // read from a write.
                   const knownKind = context?.tools.get(params.toolCall.toolCallId)?.kind;
-                  const disposition = dispositionFor(
-                    context?.input.runtimePolicy ?? latestRuntimePolicy,
+                  const effectiveParams =
                     params.toolCall.kind == null && knownKind !== undefined
                       ? { ...params, toolCall: { ...params.toolCall, kind: knownKind } }
-                      : params,
+                      : params;
+                  const disposition = dispositionFor(
+                    context?.input.runtimePolicy ?? latestRuntimePolicy,
+                    effectiveParams,
                   );
+                  const t3McpTool = extractServerQualifiedT3McpPermissionTool(effectiveParams);
                   if (disposition === "allow") {
+                    const optionId = selectAutoApprovedPermissionOption(answerableParams);
+                    return {
+                      _tag: "Immediate" as const,
+                      response:
+                        optionId === undefined
+                          ? ({ outcome: { outcome: "cancelled" } } as const)
+                          : ({ outcome: { outcome: "selected", optionId } } as const),
+                    };
+                  }
+                  if (
+                    disposition === "ask" &&
+                    t3McpTool !== undefined &&
+                    context?.input.threadId !== undefined &&
+                    (yield* mcpSessions.shouldAutoApproveT3McpTool(
+                      context.input.threadId,
+                      t3McpTool,
+                    ))
+                  ) {
                     const optionId = selectAutoApprovedPermissionOption(answerableParams);
                     return {
                       _tag: "Immediate" as const,
@@ -7640,13 +7680,24 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               // A card that never offered "this session" (Kiro's, whose
               // allow_always saves a workspace rule) cannot be answered with
               // it by a stale client or a hand-made respond call.
-              const offeredOptions = flavor.approvalOptions?.(params);
+              const t3McpTool = extractServerQualifiedT3McpPermissionTool(params);
+              const offeredOptions =
+                t3McpTool !== undefined
+                  ? t3McpApprovalOptions(t3McpTool)
+                  : flavor.approvalOptions?.(params);
               const decision =
-                answered === "acceptForSession" &&
+                (answered === "acceptForSession" || answered === "acceptAlways") &&
                 offeredOptions !== undefined &&
-                !offeredOptions.some((option) => option.decision === "acceptForSession")
+                !offeredOptions.some((option) => option.decision === answered)
                   ? "accept"
                   : answered;
+              if (t3McpTool !== undefined) {
+                if (decision === "acceptForSession") {
+                  yield* mcpSessions.allowT3McpToolForSession(context.input.threadId, t3McpTool);
+                } else if (decision === "acceptAlways") {
+                  yield* mcpSessions.allowT3McpToolGlobally(t3McpTool);
+                }
+              }
               if (decision === "accept" || decision === "acceptForSession") {
                 clientPolicyGrants.recordApproval({
                   toolKind: parsedPermission.kind,
@@ -7658,7 +7709,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 if (decision === "cancel") {
                   return { outcome: { outcome: "cancelled" } } as const;
                 }
-                const optionId = selectPermissionOptionId(answerableParams, decision);
+                const optionId =
+                  t3McpTool !== undefined &&
+                  (decision === "acceptForSession" || decision === "acceptAlways")
+                    ? selectAutoApprovedPermissionOption(answerableParams)
+                    : selectPermissionOptionId(answerableParams, decision);
                 return optionId === undefined
                   ? ({ outcome: { outcome: "cancelled" } } as const)
                   : ({ outcome: { outcome: "selected", optionId } } as const);
@@ -7698,7 +7753,51 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       params,
                       transportRequestId,
                     );
-                    if (disposition === undefined || disposition === "ask") {
+                    if (disposition === undefined) {
+                      return disposition;
+                    }
+                    if (disposition === "ask") {
+                      const elicitationMeta = unknownRecord(params._meta);
+                      const serverCandidate = [
+                        elicitationMeta?.server_name,
+                        elicitationMeta?.serverName,
+                        elicitationMeta?.server,
+                        elicitationMeta?.mcp_server,
+                      ].find((value): value is string => typeof value === "string");
+                      if (
+                        context !== null &&
+                        serverCandidate !== undefined &&
+                        T3_MCP_SERVER_ALIASES.has(serverCandidate.trim())
+                      ) {
+                        const toolCandidate = [
+                          elicitationMeta?.tool_name,
+                          elicitationMeta?.toolName,
+                          elicitationMeta?.tool,
+                        ].find((value): value is string => typeof value === "string");
+                        const canonicalTool =
+                          toolCandidate !== undefined
+                            ? canonicalizeT3McpToolName(toolCandidate)
+                            : undefined;
+                        const mcpState = yield* mcpSessions.getT3McpAutoApproveState(
+                          context.input.threadId,
+                        );
+                        const autoAllowed =
+                          canonicalTool !== undefined
+                            ? shouldAutoApproveT3McpTool(mcpState.effective, canonicalTool)
+                            : mcpState.effective.mode === "all";
+                        if (autoAllowed) {
+                          const nativeResponseAcknowledgement = yield* Deferred.make<
+                            void,
+                            EffectAcpErrors.AcpError
+                          >();
+                          yield* registerNativeResponseAcknowledgement(
+                            handlerGeneration,
+                            transportRequestId,
+                            nativeResponseAcknowledgement,
+                          );
+                          return "allow" as const;
+                        }
+                      }
                       return disposition;
                     }
                     const nativeResponseAcknowledgement = yield* Deferred.make<

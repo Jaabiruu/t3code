@@ -5872,6 +5872,115 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     );
 
     it.effect(
+      "auto-approves T3 MCP tools from McpProviderSessions and records session and global grants without leaking updatedPermissions",
+      () =>
+        Effect.gen(function* () {
+          const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+          const turn = yield* openPlanTurn("auto");
+          yield* mcpSessions.setThreadT3McpAutoApprove(turn.threadId, {
+            mode: "selected",
+            tools: ["html_preview"],
+          });
+
+          const preApproved = yield* requestWrite(turn, "mcp__t3-code__html_preview", {
+            title: "Preview",
+            html: "<p>hi</p>",
+          });
+          assert.equal(preApproved.first.type, "decision");
+          if (preApproved.first.type !== "decision") return;
+          assert.equal(preApproved.first.result?.behavior, "allow");
+
+          // Unselected tool still prompts and exposes T3 MCP session/global options.
+          const sessionPrompt = yield* requestWrite(
+            turn,
+            "mcp__t3-code__html_render",
+            { title: "Render", height: 240, html: "<p>render</p>" },
+            { toolUseID: "tool-t3-render-1" },
+          );
+          assert.equal(sessionPrompt.first.type, "request");
+          if (sessionPrompt.first.type !== "request") return;
+          const sessionRequestId = sessionPrompt.first.event.runtimeRequest.id;
+
+          yield* turn.runtime.respondToRuntimeRequest({
+            requestId: sessionRequestId,
+            decision: "acceptForSession",
+          });
+          const sessionResult = yield* Fiber.join(sessionPrompt.decision);
+          assert.equal(sessionResult?.behavior, "allow");
+          if (sessionResult?.behavior === "allow") {
+            assert.equal(sessionResult.decisionClassification, "user_temporary");
+            assert.isUndefined(sessionResult.updatedPermissions);
+          }
+          const sessionItemEvent = turn.events.find(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "approval_request" &&
+              event.turnItem.requestId === sessionRequestId,
+          );
+          assert.isDefined(sessionItemEvent);
+          if (
+            sessionItemEvent?.type === "turn_item.updated" &&
+            sessionItemEvent.turnItem.type === "approval_request"
+          ) {
+            assert.isTrue(
+              sessionItemEvent.turnItem.options?.some(
+                (option) => option.decision === "acceptForSession",
+              ),
+            );
+            assert.isTrue(
+              sessionItemEvent.turnItem.options?.some(
+                (option) => option.decision === "acceptAlways",
+              ),
+            );
+          }
+
+          const cachedSessionCall = yield* requestWrite(
+            turn,
+            "mcp__t3-code__html_render",
+            { title: "Render 2", height: 240, html: "<p>render 2</p>" },
+            { toolUseID: "tool-t3-render-2" },
+          );
+          assert.equal(cachedSessionCall.first.type, "decision");
+          if (cachedSessionCall.first.type !== "decision") return;
+          assert.equal(cachedSessionCall.first.result?.behavior, "allow");
+
+          // Global allow applies to another thread that has no session override.
+          const globalPrompt = yield* requestWrite(
+            turn,
+            "mcp__t3-code__send_to_user",
+            { message: "hello" },
+            { toolUseID: "tool-t3-send-1" },
+          );
+          assert.equal(globalPrompt.first.type, "request");
+          if (globalPrompt.first.type !== "request") return;
+          yield* turn.runtime.respondToRuntimeRequest({
+            requestId: globalPrompt.first.event.runtimeRequest.id,
+            decision: "acceptAlways",
+          });
+          const globalResult = yield* Fiber.join(globalPrompt.decision);
+          assert.equal(globalResult?.behavior, "allow");
+          if (globalResult?.behavior === "allow") {
+            assert.equal(globalResult.decisionClassification, "user_temporary");
+            assert.isUndefined(globalResult.updatedPermissions);
+          }
+          const otherThreadState = yield* mcpSessions.getT3McpAutoApproveState(
+            ThreadId.make("thread-claude-other"),
+          );
+          assert.include(otherThreadState.effective.tools, "send_to_user");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+    );
+
+    it.effect(
       "returns approval feedback to the requesting tool without sending a parent prompt",
       () =>
         Effect.gen(function* () {

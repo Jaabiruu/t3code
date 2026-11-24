@@ -463,6 +463,10 @@
       "types": "./src/t3McpToolPresentationCopy.ts",
       "import": "./src/t3McpToolPresentationCopy.ts"
     },
+    "./t3McpAutoApprove": {
+      "types": "./src/t3McpAutoApprove.ts",
+      "import": "./src/t3McpAutoApprove.ts"
+    },
     "./Array": {
       "types": "./src/Array.ts",
       "import": "./src/Array.ts"

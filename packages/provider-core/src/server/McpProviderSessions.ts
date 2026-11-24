@@ -1,14 +1,25 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Pure synchronous hashing keeps page matching bounded without a runtime dependency.
 import * as NodeCrypto from "node:crypto";
-import type { ThreadId } from "@t3tools/contracts";
+import {
+  DEFAULT_T3_MCP_AUTO_APPROVE_SETTINGS,
+  type T3McpAutoApproveSettings,
+  type ThreadId,
+} from "@t3tools/contracts";
 import type { HtmlRenderReference } from "@t3tools/shared/htmlRender";
 import { stableStringify } from "@t3tools/shared/relaySigning";
+import {
+  normalizeT3McpAutoApproveTools,
+  resolveEffectiveT3McpAutoApprove,
+  shouldAutoApproveT3McpTool,
+  withAddedT3McpAutoApproveTool,
+} from "@t3tools/shared/t3McpAutoApprove";
 import { resolveT3McpToolId } from "@t3tools/shared/t3McpToolPresentation";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 
 import type { McpProviderSessionConfig } from "./mcpSession.ts";
 
@@ -48,6 +59,19 @@ export const hashToolInput = (input: unknown): string => {
   const normalized = Predicate.isObject(input) && !Array.isArray(input) ? input : {};
   return hashText(stableStringify(normalized));
 };
+
+export interface GlobalT3McpAutoApproveStore {
+  readonly read: Effect.Effect<T3McpAutoApproveSettings>;
+  readonly update: (
+    updater: (current: T3McpAutoApproveSettings) => T3McpAutoApproveSettings,
+  ) => Effect.Effect<T3McpAutoApproveSettings>;
+}
+
+export interface ThreadT3McpAutoApproveState {
+  readonly global: T3McpAutoApproveSettings;
+  readonly sessionOverride: T3McpAutoApproveSettings | null;
+  readonly effective: T3McpAutoApproveSettings;
+}
 
 export class McpProviderSessions extends Context.Service<
   McpProviderSessions,
@@ -92,6 +116,22 @@ export class McpProviderSessions extends Context.Service<
       reported?: Record<string, unknown>,
     ) => Effect.Effect<Record<string, unknown> | undefined>;
     readonly clearToolResults: (threadId: ThreadId) => Effect.Effect<void>;
+    readonly getT3McpAutoApproveState: (
+      threadId: ThreadId,
+    ) => Effect.Effect<ThreadT3McpAutoApproveState>;
+    readonly setThreadT3McpAutoApprove: (
+      threadId: ThreadId,
+      override: T3McpAutoApproveSettings | null,
+    ) => Effect.Effect<ThreadT3McpAutoApproveState>;
+    readonly shouldAutoApproveT3McpTool: (
+      threadId: ThreadId,
+      toolName: string,
+    ) => Effect.Effect<boolean>;
+    readonly allowT3McpToolForSession: (
+      threadId: ThreadId,
+      toolName: string,
+    ) => Effect.Effect<T3McpAutoApproveSettings>;
+    readonly allowT3McpToolGlobally: (toolName: string) => Effect.Effect<T3McpAutoApproveSettings>;
   }
 >()("@t3tools/provider-core/server/McpProviderSessions") {}
 
@@ -179,13 +219,45 @@ const clearThreadToolResults = (state: ToolResultState, threadId: ThreadId): Too
   return { entries, epochs };
 };
 
-const make = Effect.gen(function* () {
+const normalizeAutoApproveSettings = (
+  settings: T3McpAutoApproveSettings,
+): T3McpAutoApproveSettings => ({
+  mode: settings.mode,
+  tools: normalizeT3McpAutoApproveTools(settings.tools),
+});
+
+const make = Effect.fn("McpProviderSessions.make")(function* (
+  globalAutoApprove?: GlobalT3McpAutoApproveStore,
+) {
+  const fallbackGlobal = yield* Ref.make(DEFAULT_T3_MCP_AUTO_APPROVE_SETTINGS);
+  const globalStore: GlobalT3McpAutoApproveStore = globalAutoApprove ?? {
+    read: Ref.get(fallbackGlobal),
+    update: (updater) =>
+      Ref.modify(fallbackGlobal, (current) => {
+        const next = normalizeAutoApproveSettings(updater(current));
+        return [next, next];
+      }),
+  };
   const sessions = yield* Ref.make(new Map<ThreadId, McpProviderSessionConfig>());
   const htmlRenders = yield* Ref.make(new Map<ThreadId, ReadonlyArray<KeptHtmlRender>>());
   const toolResultState = yield* Ref.make<ToolResultState>({
     entries: new Map(),
     epochs: new Map(),
   });
+  const t3McpAutoApproveOverrides = yield* Ref.make(new Map<ThreadId, T3McpAutoApproveSettings>());
+  const globalAutoApproveSemaphore = yield* Semaphore.make(1);
+  const buildAutoApproveState = (
+    global: T3McpAutoApproveSettings,
+    override: T3McpAutoApproveSettings | null,
+  ): ThreadT3McpAutoApproveState => {
+    const normalizedGlobal = normalizeAutoApproveSettings(global);
+    const normalizedOverride = override === null ? null : normalizeAutoApproveSettings(override);
+    return {
+      global: normalizedGlobal,
+      sessionOverride: normalizedOverride,
+      effective: resolveEffectiveT3McpAutoApprove(normalizedGlobal, normalizedOverride),
+    };
+  };
   return McpProviderSessions.of({
     set: Effect.fn("McpProviderSessions.set")(function* (config) {
       const current = yield* Ref.get(sessions);
@@ -329,7 +401,63 @@ const make = Effect.gen(function* () {
     clearToolResults: Effect.fn("McpProviderSessions.clearToolResults")(function (threadId) {
       return Ref.update(toolResultState, (state) => clearThreadToolResults(state, threadId));
     }),
+    getT3McpAutoApproveState: Effect.fn("McpProviderSessions.getT3McpAutoApproveState")(
+      function* (threadId) {
+        const global = yield* globalStore.read;
+        const overrides = yield* Ref.get(t3McpAutoApproveOverrides);
+        return buildAutoApproveState(global, overrides.get(threadId) ?? null);
+      },
+    ),
+    setThreadT3McpAutoApprove: Effect.fn("McpProviderSessions.setThreadT3McpAutoApprove")(
+      function* (threadId, override) {
+        const normalizedOverride =
+          override === null ? null : normalizeAutoApproveSettings(override);
+        yield* Ref.update(t3McpAutoApproveOverrides, (current) => {
+          const next = new Map(current);
+          if (normalizedOverride === null) {
+            next.delete(threadId);
+          } else {
+            next.set(threadId, normalizedOverride);
+          }
+          return next;
+        });
+        const global = yield* globalStore.read;
+        return buildAutoApproveState(global, normalizedOverride);
+      },
+    ),
+    shouldAutoApproveT3McpTool: Effect.fn("McpProviderSessions.shouldAutoApproveT3McpTool")(
+      function* (threadId, toolName) {
+        const global = yield* globalStore.read;
+        const overrides = yield* Ref.get(t3McpAutoApproveOverrides);
+        const state = buildAutoApproveState(global, overrides.get(threadId) ?? null);
+        return shouldAutoApproveT3McpTool(state.effective, toolName);
+      },
+    ),
+    allowT3McpToolForSession: Effect.fn("McpProviderSessions.allowT3McpToolForSession")(
+      function* (threadId, toolName) {
+        const global = normalizeAutoApproveSettings(yield* globalStore.read);
+        return yield* Ref.modify(t3McpAutoApproveOverrides, (current) => {
+          const base = current.get(threadId) ?? global;
+          const updated = withAddedT3McpAutoApproveTool(base, toolName);
+          const next = new Map(current);
+          next.set(threadId, updated);
+          return [updated, next];
+        });
+      },
+    ),
+    allowT3McpToolGlobally: Effect.fn("McpProviderSessions.allowT3McpToolGlobally")(
+      function (toolName) {
+        return globalAutoApproveSemaphore.withPermits(1)(
+          globalStore.update((current) =>
+            withAddedT3McpAutoApproveTool(normalizeAutoApproveSettings(current), toolName),
+          ),
+        );
+      },
+    ),
   });
 });
 
-export const layer = Layer.effect(McpProviderSessions, make);
+export const layer = Layer.effect(McpProviderSessions, make());
+
+export const layerWithGlobalT3McpAutoApprove = (globalAutoApprove: GlobalT3McpAutoApproveStore) =>
+  Layer.effect(McpProviderSessions, make(globalAutoApprove));

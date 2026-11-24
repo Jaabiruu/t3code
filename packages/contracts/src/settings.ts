@@ -64,6 +64,26 @@ import {
   SpeechPostProcessingPromptSettings,
 } from "./speech.ts";
 
+export const T3_MCP_AUTO_APPROVE_MODES = ["off", "selected", "all"] as const;
+export const T3McpAutoApproveMode = Schema.Literals(T3_MCP_AUTO_APPROVE_MODES);
+export type T3McpAutoApproveMode = typeof T3McpAutoApproveMode.Type;
+
+export const T3McpAutoApproveSettings = Schema.Struct({
+  mode: T3McpAutoApproveMode.pipe(Schema.withDecodingDefault(Effect.succeed("off" as const))),
+  tools: Schema.Array(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+});
+export type T3McpAutoApproveSettings = typeof T3McpAutoApproveSettings.Type;
+
+export const T3McpAutoApproveSettingsPatch = Schema.Struct({
+  mode: Schema.optionalKey(T3McpAutoApproveMode),
+  tools: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+});
+export type T3McpAutoApproveSettingsPatch = typeof T3McpAutoApproveSettingsPatch.Type;
+
+export const DEFAULT_T3_MCP_AUTO_APPROVE_SETTINGS: T3McpAutoApproveSettings = Schema.decodeSync(
+  T3McpAutoApproveSettings,
+)({});
+
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
 const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
@@ -1674,6 +1694,10 @@ export const ServerSettings = Schema.Struct({
 
   /** Sent by the Usage tab with each summary request to this environment; edit in settings.json. Invalid values are ignored. */
   usageModelFilter: ForwardCompatibleOptional(UsageModelFilter),
+
+  t3McpAutoApprove: T3McpAutoApproveSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_T3_MCP_AUTO_APPROVE_SETTINGS)),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -2064,6 +2088,8 @@ export const ServerSettingsPatch = Schema.Struct({
   usageModelAliases: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(TrimmedNonEmptyString)),
   ),
+
+  t3McpAutoApprove: Schema.optionalKey(T3McpAutoApproveSettingsPatch),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

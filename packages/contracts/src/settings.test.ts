@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
+import { AuthSettingsWriteScope } from "./auth.ts";
 import { type CommandId, ProjectId } from "./baseSchemas.ts";
 import {
   ProviderDriverKind,
@@ -18,15 +19,20 @@ import {
   ClientServerSettingsPatch,
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
+  DEFAULT_T3_MCP_AUTO_APPROVE_SETTINGS,
   globalIdleCompaction,
   idleCompactionPatch,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   requiredScopesForProjectMutation,
+  requiredScopesForServerSettingsPatch,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
   ServerSettings,
   ServerSettingsPatch,
+  T3_MCP_AUTO_APPROVE_MODES,
+  T3McpAutoApproveMode,
+  T3McpAutoApproveSettings,
   withIdleCompaction,
 } from "./settings.ts";
 
@@ -671,5 +677,36 @@ describe("AntigravitySettings", () => {
     expect(resolveFieldAnnotation("defaultOrchestratorEffort")).toEqual({ hidden: true });
     expect(resolveFieldAnnotation("defaultExecutorModel")).toEqual({ hidden: true });
     expect(resolveFieldAnnotation("defaultExecutorEffort")).toEqual({ hidden: true });
+  });
+});
+
+const decodeT3McpAutoApproveMode = Schema.decodeUnknownSync(T3McpAutoApproveMode);
+const decodeT3McpAutoApproveSettings = Schema.decodeUnknownSync(T3McpAutoApproveSettings);
+
+describe("t3McpAutoApprove settings", () => {
+  it("defaults to off with empty tools and decodes partial values", () => {
+    expect(T3_MCP_AUTO_APPROVE_MODES).toEqual(["off", "selected", "all"]);
+    expect(DEFAULT_T3_MCP_AUTO_APPROVE_SETTINGS).toEqual({ mode: "off", tools: [] });
+    expect(DEFAULT_SERVER_SETTINGS.t3McpAutoApprove).toEqual({ mode: "off", tools: [] });
+    expect(decodeServerSettings({}).t3McpAutoApprove).toEqual({ mode: "off", tools: [] });
+    expect(decodeT3McpAutoApproveMode("selected")).toBe("selected");
+    expect(decodeT3McpAutoApproveSettings({ tools: ["  html_preview  "] })).toEqual({
+      mode: "off",
+      tools: ["html_preview"],
+    });
+    expect(() => decodeT3McpAutoApproveSettings({ tools: ["   "] })).toThrow();
+    expect(
+      decodeServerSettingsPatch({
+        t3McpAutoApprove: { mode: "selected", tools: ["html_preview", "html_render"] },
+      }).t3McpAutoApprove,
+    ).toEqual({
+      mode: "selected",
+      tools: ["html_preview", "html_render"],
+    });
+    expect(
+      requiredScopesForServerSettingsPatch({
+        t3McpAutoApprove: { mode: "all" },
+      }),
+    ).toEqual([AuthSettingsWriteScope]);
   });
 });

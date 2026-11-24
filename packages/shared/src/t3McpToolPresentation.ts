@@ -107,7 +107,7 @@ function tool(
 }
 
 // Codex registers "t3-code-direct" for T3 tools kept out of Code Mode.
-const T3_MCP_SERVER_ALIASES = new Set([
+export const T3_MCP_SERVER_ALIASES = new Set([
   "t3-code",
   "t3_code",
   "t3code",

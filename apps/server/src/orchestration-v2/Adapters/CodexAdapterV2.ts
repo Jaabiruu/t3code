@@ -59,6 +59,11 @@ import {
 import { getModelSelectionStringOptionValue, modelSelectionsEqual } from "@t3tools/shared/model";
 import { appendGeneratedImageEmbeds } from "@t3tools/shared/generatedImageMarkdown";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import {
+  canonicalizeT3McpToolName,
+  shouldAutoApproveT3McpTool,
+} from "@t3tools/shared/t3McpAutoApprove";
+import { T3_MCP_SERVER_ALIASES } from "@t3tools/shared/t3McpToolPresentation";
 import { mcpToolResultOutput } from "@t3tools/shared/toolOutput";
 import { oauthCallbackUrl } from "@t3tools/shared/oauthCallback";
 import type {
@@ -6329,11 +6334,70 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return acceptance;
             }
 
+            const isT3McpServer = T3_MCP_SERVER_ALIASES.has(payload.serverName.trim());
+            const extractCodexT3McpTool = (): string | undefined => {
+              if (!isT3McpServer || typeof payload._meta !== "object" || payload._meta === null) {
+                return undefined;
+              }
+              const meta = payload._meta as Record<string, unknown>;
+              const nestedTarget =
+                typeof meta.target === "object" && meta.target !== null
+                  ? (meta.target as Record<string, unknown>)
+                  : undefined;
+              const nestedParams =
+                typeof meta.tool_params === "object" && meta.tool_params !== null
+                  ? (meta.tool_params as Record<string, unknown>)
+                  : undefined;
+              for (const candidate of [
+                meta.toolName,
+                meta.tool_name,
+                meta.tool,
+                nestedTarget?.toolName,
+                nestedTarget?.tool,
+                nestedTarget?.name,
+                nestedParams?.toolName,
+                nestedParams?.tool,
+                nestedParams?.name,
+              ]) {
+                if (typeof candidate === "string") {
+                  const canonical = canonicalizeT3McpToolName(candidate);
+                  if (canonical !== undefined) return canonical;
+                }
+              }
+              return undefined;
+            };
+            const t3McpTool = extractCodexT3McpTool();
+            if (isT3McpServer) {
+              const mcpAutoApproveState = yield* mcpSessions.getT3McpAutoApproveState(
+                context.input.threadId,
+              );
+              const autoApproved =
+                t3McpTool !== undefined
+                  ? shouldAutoApproveT3McpTool(mcpAutoApproveState.effective, t3McpTool)
+                  : mcpAutoApproveState.effective.mode === "all";
+              if (autoApproved) {
+                return acceptance;
+              }
+            }
+
             const nativeRequestId =
               payload.mode === "url"
                 ? payload.elicitationId
                 : `mcp-elicitation:${payload.serverName}`;
             const described = describeMcpElicitation(payload);
+            const approvalOptions =
+              t3McpTool !== undefined
+                ? [
+                    { decision: "cancel", label: "Cancel" } as const,
+                    { decision: "decline", label: "Decline" } as const,
+                    {
+                      decision: "acceptForSession",
+                      label: `Allow ${t3McpTool} this session`,
+                    } as const,
+                    { decision: "acceptAlways", label: `Always allow ${t3McpTool}` } as const,
+                    { decision: "accept", label: "Allow" } as const,
+                  ]
+                : described.options;
             const artifacts = yield* buildApprovalRequestArtifacts({
               context,
               nativeItemId: nativeRequestId,
@@ -6341,7 +6405,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               requestKind: "mcp-elicitation",
               prompt: payload.message,
               appName: described.appName,
-              options: described.options,
+              options: approvalOptions,
             });
             const decision = yield* Deferred.make<ProviderApprovalDecision, never>();
             yield* Ref.update(pendingRuntimeRequests, (current) => {
@@ -6379,6 +6443,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }),
               ),
             );
+            if (t3McpTool !== undefined) {
+              if (resolved === "acceptForSession") {
+                yield* mcpSessions.allowT3McpToolForSession(context.input.threadId, t3McpTool);
+                return toMcpElicitationResponse(payload, "accept");
+              }
+              if (resolved === "acceptAlways") {
+                yield* mcpSessions.allowT3McpToolGlobally(t3McpTool);
+                return toMcpElicitationResponse(payload, "accept");
+              }
+            }
             return toMcpElicitationResponse(payload, resolved);
           }).pipe(Effect.orDie),
         );

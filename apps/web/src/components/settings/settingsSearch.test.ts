@@ -100,6 +100,12 @@ describe("searchSettings", () => {
     }
   });
 
+  it("finds T3 MCP auto-approve settings by HTML tool and alias queries", () => {
+    for (const query of ["t3-code", "html_preview", "view_html", "mcp auto approve"]) {
+      expect(searchSettings(query).map((item) => item.id)).toContain("t3-mcp-auto-approve");
+    }
+  });
+
   it("finds the Scheduled tasks page", () => {
     expect(searchSettings("scheduled tasks")[0]).toMatchObject({
       id: "scheduled-tasks",

@@ -222,6 +222,16 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:force-stop-thread",
       tag: ORCHESTRATION_V2_WS_METHODS.forceStopThread,
     }),
+    threadT3McpAutoApprove: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:t3-mcp-auto-approve",
+      tag: ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove,
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+    }),
+    setThreadT3McpAutoApprove: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:set-t3-mcp-auto-approve",
+      tag: ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove,
+    }),
     turnItem: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: OrchestrationV2GetTurnItemInput;

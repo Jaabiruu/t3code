@@ -1,4 +1,4 @@
-import type { RuntimeMode } from "@t3tools/contracts";
+import type { EnvironmentId, RuntimeMode, ThreadId } from "@t3tools/contracts";
 import { useGT } from "gt-react";
 import { memo, useRef } from "react";
 import { EllipsisIcon } from "lucide-react";
@@ -12,6 +12,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   runtimeMode: RuntimeMode;
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   showPermissions: boolean;
+  t3McpSession?: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId } | null;
   size?: "sm" | "xs";
   /** Close the portaled popup when its trigger hides. */
   hidden?: boolean;
@@ -47,6 +48,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
           <ComposerPermissionsSection
             runtimeMode={props.runtimeMode}
             runtimeModeOptions={props.runtimeModeOptions}
+            t3McpSession={props.t3McpSession ?? null}
             onRuntimeModeChange={props.onRuntimeModeChange}
           />
         ) : null}

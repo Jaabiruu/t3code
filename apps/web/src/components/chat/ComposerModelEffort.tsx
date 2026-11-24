@@ -4,7 +4,12 @@ import {
   isReasoningControl,
   selectableProviderOptionChoices,
 } from "@t3tools/client-runtime/model-traits";
-import type { ProviderOptionDescriptor, RuntimeMode } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProviderOptionDescriptor,
+  RuntimeMode,
+  ThreadId,
+} from "@t3tools/contracts";
 import type { EffortDisplay } from "@t3tools/contracts/settings";
 import { getProviderOptionCurrentLabel } from "@t3tools/shared/model";
 import { msg, T, useGT, useMessages } from "gt-react";
@@ -679,6 +684,7 @@ function UltracodeControl(props: { traits: TraitsSelectionInput }) {
 function PermissionsMenu(props: {
   runtimeMode: RuntimeMode;
   options: ReadonlyArray<RuntimeModeOption>;
+  t3McpSession?: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId } | null;
   onChange: (mode: RuntimeMode) => void;
 }) {
   const gt = useGT();
@@ -711,6 +717,7 @@ function PermissionsMenu(props: {
         <ComposerPermissionsSection
           runtimeMode={props.runtimeMode}
           runtimeModeOptions={props.options}
+          t3McpSession={props.t3McpSession ?? null}
           onRuntimeModeChange={props.onChange}
         />
       </MenuPopup>
@@ -723,6 +730,7 @@ export function ComposerPickerFooter(props: {
   traits: TraitsSelectionInput | null;
   runtimeMode: RuntimeMode;
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
+  t3McpSession?: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId } | null;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
   return (
@@ -732,6 +740,7 @@ export function ComposerPickerFooter(props: {
       <PermissionsMenu
         runtimeMode={props.runtimeMode}
         options={props.runtimeModeOptions}
+        t3McpSession={props.t3McpSession ?? null}
         onChange={props.onRuntimeModeChange}
       />
     </div>

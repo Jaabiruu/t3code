@@ -165,6 +165,10 @@ export function ComposerControlsBar(props: {
     onPromptEdit,
   });
   const effort = describeComposerEffort(traitsInput, props.effortDisplay, controlSize, m);
+  const t3McpSession =
+    routeKind === "server" && routeThreadRef
+      ? { environmentId, threadId: routeThreadRef.threadId }
+      : null;
   const restingBlockDefs = showModeBlock
     ? [
         {
@@ -177,6 +181,7 @@ export function ComposerControlsBar(props: {
               hidden={composerControlsHidden || restingHiddenBlockCount > 0}
               accessDisplay={accessDisplay}
               emphasized={!accessMatchesDefault}
+              t3McpSession={t3McpSession}
               onRuntimeModeChange={handleRuntimeModeChange}
             />
           ),
@@ -230,6 +235,7 @@ export function ComposerControlsBar(props: {
           traits={traitsInput}
           runtimeMode={compatibleRuntimeMode}
           runtimeModeOptions={compatibleRuntimeModeOptions}
+          t3McpSession={t3McpSession}
           onRuntimeModeChange={handleRuntimeModeChange}
         />
       }
@@ -306,6 +312,7 @@ export function ComposerControlsBar(props: {
             hidden={composerControlsHidden || hiddenRestingBlockIds.length === 0}
             // Permissions join the overflow only when their normal home is in it.
             showPermissions={overflowShowsPermissions}
+            t3McpSession={t3McpSession}
             onRuntimeModeChange={handleRuntimeModeChange}
           />
         </div>

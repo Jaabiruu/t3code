@@ -1095,3 +1095,38 @@ describe("resolveSpeechPostProcessingModelSelection", () => {
     ).toBeNull();
   });
 });
+
+describe("t3McpAutoApprove patches", () => {
+  it("normalizes, replaces tool lists without index-merging, and preserves mode across partial patches", () => {
+    const selected = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      t3McpAutoApprove: {
+        mode: "selected",
+        tools: ["mcp_t3-code_html_render", " html_preview ", "html_render", "send_to_user"],
+      },
+    });
+    expect(selected.t3McpAutoApprove).toEqual({
+      mode: "selected",
+      tools: ["html_preview", "html_render", "send_to_user"],
+    });
+
+    const cleared = applyServerSettingsPatch(selected, {
+      t3McpAutoApprove: {
+        tools: ["html_preview"],
+      },
+    });
+    expect(cleared.t3McpAutoApprove).toEqual({
+      mode: "selected",
+      tools: ["html_preview"],
+    });
+
+    const allMode = applyServerSettingsPatch(cleared, {
+      t3McpAutoApprove: {
+        mode: "all",
+      },
+    });
+    expect(allMode.t3McpAutoApprove).toEqual({
+      mode: "all",
+      tools: ["html_preview"],
+    });
+  });
+});

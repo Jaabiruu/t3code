@@ -23,6 +23,10 @@ import {
   OrchestrationV2GetNativeSwarmStateError,
   OrchestrationV2GetNativeSwarmStateInput,
   OrchestrationV2GetNativeSwarmStateResult,
+  OrchestrationV2GetThreadT3McpAutoApproveInput,
+  OrchestrationV2SetThreadT3McpAutoApproveInput,
+  OrchestrationV2ThreadT3McpAutoApproveError,
+  OrchestrationV2ThreadT3McpAutoApproveState,
   OrchestrationV2NativeArtifactKind,
   OrchestrationV2NativeSwarmMemberState,
   OrchestrationV2NativeSwarmPostKind,
@@ -1030,6 +1034,61 @@ describe("native swarm and artifact contracts", () => {
       threadId: ThreadId.make("thread-2"),
     });
     expect(err._tag).toBe("OrchestrationV2GetNativeArtifactsError");
+    const decodedExit = Schema.decodeSync(exitCodec)(Schema.encodeSync(exitCodec)(Exit.fail(err)));
+    expect(Exit.isFailure(decodedExit)).toBe(true);
+  });
+
+  it("decodes and encodes thread T3 MCP auto-approve RPC schemas and error tags", () => {
+    expect(ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove).toBe(
+      "orchestration.getThreadT3McpAutoApprove",
+    );
+    expect(ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove).toBe(
+      "orchestration.setThreadT3McpAutoApprove",
+    );
+    expect(OrchestrationV2RpcSchemas.getThreadT3McpAutoApprove.input).toBe(
+      OrchestrationV2GetThreadT3McpAutoApproveInput,
+    );
+    expect(OrchestrationV2RpcSchemas.getThreadT3McpAutoApprove.output).toBe(
+      OrchestrationV2ThreadT3McpAutoApproveState,
+    );
+    expect(OrchestrationV2RpcSchemas.setThreadT3McpAutoApprove.input).toBe(
+      OrchestrationV2SetThreadT3McpAutoApproveInput,
+    );
+    expect(OrchestrationV2RpcSchemas.setThreadT3McpAutoApprove.output).toBe(
+      OrchestrationV2ThreadT3McpAutoApproveState,
+    );
+
+    const getRpc = WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove);
+    const setRpc = WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove);
+    if (getRpc === undefined || setRpc === undefined) {
+      throw new Error("T3 MCP auto-approve RPCs are not registered");
+    }
+
+    const decodeGet = Schema.decodeUnknownSync(Schema.toCodecJson(getRpc.payloadSchema));
+    expect(decodeGet({ threadId: "thread-mcp-1" })).toEqual({
+      threadId: ThreadId.make("thread-mcp-1"),
+    });
+
+    const decodeSet = Schema.decodeUnknownSync(Schema.toCodecJson(setRpc.payloadSchema));
+    expect(decodeSet({ threadId: "thread-mcp-1", override: null })).toEqual({
+      threadId: ThreadId.make("thread-mcp-1"),
+      override: null,
+    });
+    expect(
+      decodeSet({
+        threadId: "thread-mcp-1",
+        override: { mode: "selected", tools: ["html_preview"] },
+      }),
+    ).toEqual({
+      threadId: ThreadId.make("thread-mcp-1"),
+      override: { mode: "selected", tools: ["html_preview"] },
+    });
+
+    const exitCodec = Schema.toCodecJson(Rpc.exitSchema(setRpc));
+    const err = new OrchestrationV2ThreadT3McpAutoApproveError({
+      threadId: ThreadId.make("thread-mcp-1"),
+    });
+    expect(err._tag).toBe("OrchestrationV2ThreadT3McpAutoApproveError");
     const decodedExit = Schema.decodeSync(exitCodec)(Schema.encodeSync(exitCodec)(Exit.fail(err)));
     expect(Exit.isFailure(decodedExit)).toBe(true);
   });

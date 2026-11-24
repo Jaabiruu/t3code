@@ -17,6 +17,8 @@ const RPC_AGGREGATES = {
   [ORCHESTRATION_V2_WS_METHODS.getNativeChildWork]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getNativeSwarmState]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getNativeArtifacts]: "orchestration",
+  [ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove]: "orchestration",
+  [ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: "orchestration",

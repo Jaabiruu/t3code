@@ -330,6 +330,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     environmentOnly: true,
   },
   {
+    id: "t3-mcp-auto-approve",
+    title: msg("T3 MCP auto-approve"),
+    to: "/settings/threads",
+    scope: "environment-defaults",
+    searchTerms: [
+      msg(
+        "mcp t3-code auto approve html_preview html_render view_html send_to_user preview tools permissions",
+      ),
+    ],
+    environmentOnly: true,
+  },
+  {
     id: "default-permissions",
     title: msg("Permissions"),
     to: "/settings/threads",

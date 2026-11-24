@@ -10,6 +10,7 @@ import {
   ProviderSessionId,
   RunAttemptId,
   RunId,
+  type T3McpAutoApproveSettings,
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
@@ -28,6 +29,7 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -3273,5 +3275,458 @@ describe("AntigravityAdapterV2 capabilities, ProposedPlanCard, and orchestrator 
         ),
         Effect.scoped,
       ),
+  );
+
+  it.effect(
+    "auto-approves T3 MCP tools per policy, records session/global grants via allow_once, and never bypasses foreign, command, or read-only checks",
+    () =>
+      Effect.gen(function* () {
+        const globalRef = yield* Ref.make<T3McpAutoApproveSettings>({
+          mode: "off",
+          tools: [],
+        });
+        const layerMcp = McpProviderSessions.layerWithGlobalT3McpAutoApprove({
+          read: Ref.get(globalRef),
+          update: (updater) =>
+            Ref.modify(globalRef, (current) => {
+              const next = updater(current);
+              return [next, next];
+            }),
+        });
+
+        yield* Effect.gen(function* () {
+          const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+          let permissionHandler:
+            | Parameters<
+                AcpSessionRuntime.AcpSessionRuntime["Service"]["handleRequestPermission"]
+              >[0]
+            | undefined;
+          let onOutgoingResponse: ((requestId: string) => Effect.Effect<void>) | undefined;
+          const promptStarted = yield* Deferred.make<void>();
+          const releasePrompt = yield* Deferred.make<void>();
+          const roPromptStarted = yield* Deferred.make<void>();
+          const releaseRoPrompt = yield* Deferred.make<void>();
+          let promptCall = 0;
+          let sessionCounter = 0;
+
+          const makeMockRuntime = (): AcpSessionRuntime.AcpSessionRuntime["Service"] => ({
+            handleRequestPermission: (handler) =>
+              Effect.sync(() => {
+                permissionHandler = handler;
+              }),
+            handleElicitation: () => Effect.void,
+            handleMcpConnect: () => Effect.void,
+            handleMcpMessage: () => Effect.void,
+            handleMcpDisconnect: () => Effect.void,
+            handleMcpNotification: () => Effect.void,
+            handleReadTextFile: () => Effect.void,
+            handleWriteTextFile: () => Effect.void,
+            handleCreateTerminal: () => Effect.void,
+            handleTerminalOutput: () => Effect.void,
+            handleTerminalWaitForExit: () => Effect.void,
+            handleTerminalKill: () => Effect.void,
+            handleTerminalRelease: () => Effect.void,
+            handleSessionUpdate: () => Effect.void,
+            handleElicitationComplete: () => Effect.void,
+            handleUnknownExtRequest: () => Effect.void,
+            handleUnknownExtNotification: () => Effect.void,
+            handleExtRequest: () => Effect.void,
+            handleExtNotification: () => Effect.void,
+            initialize: () => Effect.succeed({ protocolVersion: 1 }),
+            start: () =>
+              Effect.sync(() => {
+                sessionCounter += 1;
+                const sessionId = `sess-mcp-${sessionCounter}`;
+                return {
+                  sessionId,
+                  initializeResult: { protocolVersion: 1 },
+                  sessionSetupResult: {
+                    sessionId,
+                    configOptions: [
+                      {
+                        id: "model",
+                        name: "Model",
+                        category: "model",
+                        type: "select",
+                        currentValue: "orchestrator-v1",
+                        options: [{ value: "orchestrator-v1", name: "Orchestrator" }],
+                      },
+                    ],
+                  },
+                  modelConfigId: "model",
+                };
+              }),
+            getEvents: () => Stream.empty,
+            drainEvents: Effect.void,
+            getModeState: Effect.undefined,
+            getConfigOptions: Effect.succeed([
+              {
+                id: "model",
+                name: "Model",
+                category: "model",
+                type: "select",
+                currentValue: "orchestrator-v1",
+                options: [{ value: "orchestrator-v1", name: "Orchestrator" }],
+              },
+            ]),
+            configOptionChanges: Stream.empty,
+            loadSession: () => Effect.die("unused"),
+            resumeSession: () => Effect.die("unused"),
+            forkSession: () => Effect.die("unused"),
+            listSessions: () => Effect.succeed({ sessions: [] }),
+            closeSession: () => Effect.succeed({}),
+            deleteSession: () => Effect.succeed({}),
+            listProviders: Effect.succeed({ providers: [] }),
+            setProvider: () => Effect.succeed({}),
+            disableProvider: () => Effect.succeed({}),
+            logout: Effect.succeed({}),
+            prompt: () => {
+              promptCall += 1;
+              if (promptCall === 1) {
+                return Deferred.succeed(promptStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releasePrompt)),
+                  Effect.as({ stopReason: "end_turn" as const }),
+                );
+              }
+              return Deferred.succeed(roPromptStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseRoPrompt)),
+                Effect.as({ stopReason: "end_turn" as const }),
+              );
+            },
+            cancel: Effect.void,
+            setMode: () => Effect.succeed({}),
+            setSessionModel: () => Effect.succeed({}),
+            setConfigOption: () => Effect.succeed({ configOptions: [] }),
+            setModel: () => Effect.void,
+            request: () => Effect.succeed({}),
+            notify: () => Effect.void,
+          });
+
+          const instanceId = ProviderInstanceId.make("antigravity-mcp-auto");
+          const adapter = yield* makeAntigravityAdapterV2({
+            instanceId,
+            selfInvocation: yield* resolveSelfInvocation(),
+            makeRuntime: (runtimeInput) => {
+              onOutgoingResponse = runtimeInput.onOutgoingResponse;
+              return Effect.succeed(makeMockRuntime());
+            },
+            withProcess: (_stop, task) => task,
+            defaultModel: Effect.succeed("orchestrator-v1"),
+          });
+
+          const threadA = ThreadId.make("thread-agy-mcp-a");
+          const modelSelection = { instanceId, model: "orchestrator-v1" } as const;
+          const supervisedPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            cwd: process.cwd(),
+          });
+          const session = yield* adapter.openSession({
+            threadId: threadA,
+            providerSessionId: ProviderSessionId.make("ps-agy-mcp-a"),
+            modelSelection,
+            runtimePolicy: supervisedPolicy,
+          });
+          const approvals = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+          yield* session.events.pipe(
+            Stream.filter(
+              (event) =>
+                event.type === "turn_item.updated" && event.turnItem.type === "approval_request",
+            ),
+            Stream.runForEach((event) => Queue.offer(approvals, event)),
+            Effect.forkScoped,
+          );
+          const providerThread = yield* session.ensureThread({
+            threadId: threadA,
+            modelSelection,
+            runtimePolicy: supervisedPolicy,
+          });
+          yield* mcpSessions.setThreadT3McpAutoApprove(threadA, {
+            mode: "selected",
+            tools: ["html_preview"],
+          });
+
+          const turnFiber = yield* session
+            .startTurn(
+              makeTurnInput({
+                threadId: threadA,
+                providerThread,
+                instanceId,
+                modelSelection,
+                runtimePolicy: supervisedPolicy,
+                now: yield* DateTime.now,
+                messageText: "Render HTML.",
+              }),
+            )
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(promptStarted);
+          if (permissionHandler === undefined) {
+            return yield* Effect.die("permission handler was not registered");
+          }
+
+          const options: EffectAcpSchema.PermissionOption[] = [
+            { optionId: "once", name: "Allow once", kind: "allow_once" },
+            { optionId: "always", name: "Always allow", kind: "allow_always" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ];
+          const context = (id: string) => ({ requestId: id, method: "session/request_permission" });
+          const requestPermission = (
+            params: EffectAcpSchema.RequestPermissionRequest,
+            requestId: string,
+          ) =>
+            Effect.suspend(() => {
+              if (permissionHandler === undefined) {
+                return Effect.die("permission handler was not registered");
+              }
+              return permissionHandler(params, context(requestId)).pipe(
+                Effect.tap(() => onOutgoingResponse?.(requestId) ?? Effect.void),
+              );
+            });
+
+          // 1. Pre-selected T3 MCP tool auto-approves immediately with allow_once.
+          const previewResponse = yield* requestPermission(
+            {
+              sessionId: "sess-mcp-1",
+              options,
+              toolCall: {
+                toolCallId: "t3-preview-1",
+                title: "MCP Tool html_preview",
+                kind: "other",
+                rawInput: { ServerName: "t3-code", ToolName: "html_preview" },
+              },
+            },
+            "req-preview-1",
+          );
+          assert.deepEqual(previewResponse, { outcome: { outcome: "selected", optionId: "once" } });
+          assert.isTrue(Option.isNone(yield* Queue.poll(approvals)));
+
+          // 2. Unselected T3 MCP tool prompts with session + global options and sends allow_once.
+          const renderFiber = yield* requestPermission(
+            {
+              sessionId: "sess-mcp-1",
+              options,
+              toolCall: {
+                toolCallId: "t3-render-1",
+                title: "MCP Tool html_render",
+                kind: "other",
+                rawInput: { ServerName: "t3-code", ToolName: "html_render" },
+              },
+            },
+            "req-render-1",
+          ).pipe(Effect.forkScoped);
+          const renderPromptEvent = yield* Queue.take(approvals);
+          assert.equal(renderPromptEvent.type, "turn_item.updated");
+          if (
+            renderPromptEvent.type !== "turn_item.updated" ||
+            renderPromptEvent.turnItem.type !== "approval_request"
+          ) {
+            return;
+          }
+          assert.isTrue(
+            renderPromptEvent.turnItem.options?.some(
+              (option) => option.decision === "acceptForSession",
+            ),
+          );
+          assert.isTrue(
+            renderPromptEvent.turnItem.options?.some(
+              (option) => option.decision === "acceptAlways",
+            ),
+          );
+          yield* session.respondToRuntimeRequest({
+            requestId: renderPromptEvent.turnItem.requestId,
+            decision: "acceptForSession",
+          });
+          assert.deepEqual(yield* Fiber.join(renderFiber), {
+            outcome: { outcome: "selected", optionId: "once" },
+          });
+
+          // Subsequent call in the same session auto-approves immediately.
+          const renderCached = yield* requestPermission(
+            {
+              sessionId: "sess-mcp-1",
+              options,
+              toolCall: {
+                toolCallId: "t3-render-2",
+                title: "MCP Tool html_render",
+                kind: "other",
+                rawInput: { ServerName: "t3-code", ToolName: "html_render" },
+              },
+            },
+            "req-render-2",
+          );
+          assert.deepEqual(renderCached, { outcome: { outcome: "selected", optionId: "once" } });
+
+          // 3. Global acceptAlways updates globalRef while keeping allow_once on ACP wire.
+          const sendFiber = yield* requestPermission(
+            {
+              sessionId: "sess-mcp-1",
+              options,
+              toolCall: {
+                toolCallId: "t3-send-1",
+                title: "MCP Tool send_to_user",
+                kind: "other",
+                rawInput: { ServerName: "t3-code", ToolName: "send_to_user" },
+              },
+            },
+            "req-send-1",
+          ).pipe(Effect.forkScoped);
+          const sendPromptEvent = yield* Queue.take(approvals);
+          if (
+            sendPromptEvent.type !== "turn_item.updated" ||
+            sendPromptEvent.turnItem.type !== "approval_request"
+          ) {
+            return;
+          }
+          yield* session.respondToRuntimeRequest({
+            requestId: sendPromptEvent.turnItem.requestId,
+            decision: "acceptAlways",
+          });
+          assert.deepEqual(yield* Fiber.join(sendFiber), {
+            outcome: { outcome: "selected", optionId: "once" },
+          });
+          assert.include((yield* Ref.get(globalRef)).tools, "send_to_user");
+          assert.isTrue(
+            yield* mcpSessions.shouldAutoApproveT3McpTool(
+              ThreadId.make("thread-agy-mcp-other"),
+              "send_to_user",
+            ),
+          );
+
+          // 4. Global "all" never bypasses foreign servers or CommandLine calls.
+          yield* Ref.set(globalRef, { mode: "all", tools: [] });
+          yield* mcpSessions.setThreadT3McpAutoApprove(threadA, null);
+
+          const foreignFiber = yield* requestPermission(
+            {
+              sessionId: "sess-mcp-1",
+              options,
+              toolCall: {
+                toolCallId: "foreign-1",
+                title: "MCP Tool html_preview",
+                kind: "other",
+                rawInput: { ServerName: "other-mcp", ToolName: "html_preview" },
+              },
+            },
+            "req-foreign-1",
+          ).pipe(Effect.forkScoped);
+          const foreignEvent = yield* Queue.take(approvals);
+          if (
+            foreignEvent.type !== "turn_item.updated" ||
+            foreignEvent.turnItem.type !== "approval_request"
+          ) {
+            return;
+          }
+          yield* session.respondToRuntimeRequest({
+            requestId: foreignEvent.turnItem.requestId,
+            decision: "decline",
+          });
+          assert.deepEqual(yield* Fiber.join(foreignFiber), {
+            outcome: { outcome: "selected", optionId: "deny" },
+          });
+
+          const cmdFiber = yield* requestPermission(
+            {
+              sessionId: "sess-mcp-1",
+              options,
+              toolCall: {
+                toolCallId: "cmd-1",
+                title: "Run mcp_t3-code_html_preview",
+                kind: "execute",
+                rawInput: { CommandLine: "Run mcp_t3-code_html_preview" },
+              },
+            },
+            "req-cmd-1",
+          ).pipe(Effect.forkScoped);
+          const cmdEvent = yield* Queue.take(approvals);
+          if (
+            cmdEvent.type !== "turn_item.updated" ||
+            cmdEvent.turnItem.type !== "approval_request"
+          ) {
+            return;
+          }
+          yield* session.respondToRuntimeRequest({
+            requestId: cmdEvent.turnItem.requestId,
+            decision: "decline",
+          });
+          assert.deepEqual(yield* Fiber.join(cmdFiber), {
+            outcome: { outcome: "selected", optionId: "deny" },
+          });
+
+          yield* Deferred.succeed(releasePrompt, undefined);
+          yield* Fiber.join(turnFiber);
+
+          // 5. Explicit readOnly sandbox denials are never bypassed even in mode "all".
+          const roSession = yield* adapter.openSession({
+            threadId: ThreadId.make("thread-agy-ro"),
+            providerSessionId: ProviderSessionId.make("ps-agy-ro"),
+            modelSelection,
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: process.cwd(),
+              approvalPolicy: "never",
+              sandboxPolicy: { type: "readOnly" },
+            }),
+          });
+          const roProviderThread = yield* roSession.ensureThread({
+            threadId: ThreadId.make("thread-agy-ro"),
+            modelSelection,
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: process.cwd(),
+              approvalPolicy: "never",
+              sandboxPolicy: { type: "readOnly" },
+            }),
+          });
+          const roTurnFiber = yield* roSession
+            .startTurn(
+              makeTurnInput({
+                threadId: ThreadId.make("thread-agy-ro"),
+                providerThread: roProviderThread,
+                instanceId,
+                modelSelection,
+                runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  cwd: process.cwd(),
+                  approvalPolicy: "never",
+                  sandboxPolicy: { type: "readOnly" },
+                }),
+                now: yield* DateTime.now,
+                messageText: "Read-only check.",
+              }),
+            )
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(roPromptStarted);
+          const roResponse = yield* requestPermission(
+            {
+              sessionId: "sess-mcp-2",
+              options,
+              toolCall: {
+                toolCallId: "ro-exec-1",
+                title: "MCP Tool html_preview",
+                kind: "execute",
+                rawInput: { ServerName: "t3-code", ToolName: "html_preview" },
+              },
+            },
+            "req-ro-1",
+          );
+          assert.deepEqual(roResponse, { outcome: { outcome: "selected", optionId: "deny" } });
+          yield* Deferred.succeed(releaseRoPrompt, undefined);
+          yield* Fiber.join(roTurnFiber);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              NodeCrypto.layer,
+              TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
+              IdAllocator.layer,
+              layerMcp,
+            ),
+          ),
+          Effect.scoped,
+        );
+      }),
   );
 });

@@ -30,6 +30,7 @@ import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
 import { createModelSelection, readCustomModelEntries } from "./model.ts";
+import { normalizeT3McpAutoApproveTools } from "./t3McpAutoApprove.ts";
 import {
   getBackgroundActivityBaseProfile,
   normalizeBackgroundActivitySettings,
@@ -407,6 +408,7 @@ export function applyServerSettingsPatch(
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
+    t3McpAutoApprove: t3McpAutoApprovePatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
@@ -640,6 +642,17 @@ export function applyServerSettingsPatch(
             current.usageModelAliases,
             usageModelAliasesPatch,
           ),
+        }
+      : {}),
+    ...(t3McpAutoApprovePatch !== undefined
+      ? {
+          t3McpAutoApprove: {
+            mode: t3McpAutoApprovePatch.mode ?? current.t3McpAutoApprove.mode,
+            tools:
+              t3McpAutoApprovePatch.tools !== undefined
+                ? normalizeT3McpAutoApproveTools(t3McpAutoApprovePatch.tools)
+                : current.t3McpAutoApprove.tools,
+          },
         }
       : {}),
     ...(patch.sourceControlWriterModelSelection !== undefined

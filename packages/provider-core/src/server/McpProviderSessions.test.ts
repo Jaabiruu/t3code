@@ -1,6 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProviderInstanceId,
+  type T3McpAutoApproveSettings,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Ref from "effect/Ref";
 
 import * as McpProviderSessions from "./McpProviderSessions.ts";
 
@@ -157,5 +163,68 @@ describe("McpProviderSessions tool results", () => {
         undefined,
       );
     }).pipe(Effect.provide(McpProviderSessions.layer)),
+  );
+});
+
+describe("McpProviderSessions T3 MCP auto-approval", () => {
+  it.effect("merges global and per-thread overrides and supports session/global grants", () =>
+    Effect.gen(function* () {
+      const globalRef = yield* Ref.make<T3McpAutoApproveSettings>({
+        mode: "selected",
+        tools: ["preview_open"],
+      });
+      const layer = McpProviderSessions.layerWithGlobalT3McpAutoApprove({
+        read: Ref.get(globalRef),
+        update: (updater) =>
+          Ref.modify(globalRef, (current) => {
+            const next = updater(current);
+            return [next, next];
+          }),
+      });
+
+      yield* Effect.gen(function* () {
+        const sessions = yield* McpProviderSessions.McpProviderSessions;
+        const threadA = ThreadId.make("thread-mcp-a");
+        const threadB = ThreadId.make("thread-mcp-b");
+
+        assert.isTrue(yield* sessions.shouldAutoApproveT3McpTool(threadA, "preview_open"));
+        assert.isFalse(yield* sessions.shouldAutoApproveT3McpTool(threadA, "html_preview"));
+
+        // Session allow preserves globally approved tools on threadA without affecting threadB.
+        const afterSessionAllow = yield* sessions.allowT3McpToolForSession(threadA, "html_preview");
+        assert.deepEqual(afterSessionAllow, {
+          mode: "selected",
+          tools: ["html_preview", "preview_open"],
+        });
+        assert.isTrue(yield* sessions.shouldAutoApproveT3McpTool(threadA, "html_preview"));
+        assert.isTrue(yield* sessions.shouldAutoApproveT3McpTool(threadA, "preview_open"));
+        assert.isFalse(yield* sessions.shouldAutoApproveT3McpTool(threadB, "html_preview"));
+
+        // Turning a thread override off blocks even globally approved tools on that thread.
+        const forcedOff = yield* sessions.setThreadT3McpAutoApprove(threadB, {
+          mode: "off",
+          tools: [],
+        });
+        assert.deepEqual(forcedOff.effective, { mode: "off", tools: [] });
+        assert.isFalse(yield* sessions.shouldAutoApproveT3McpTool(threadB, "preview_open"));
+
+        // Clearing threadB restores global inheritance.
+        const resetB = yield* sessions.setThreadT3McpAutoApprove(threadB, null);
+        assert.isNull(resetB.sessionOverride);
+        assert.isTrue(yield* sessions.shouldAutoApproveT3McpTool(threadB, "preview_open"));
+
+        // Clearing session HTTP metadata keeps thread auto-approve override intact.
+        yield* sessions.clear(threadA);
+        assert.isTrue(yield* sessions.shouldAutoApproveT3McpTool(threadA, "html_preview"));
+
+        // Global allow updates the shared global store for all threads without an override.
+        const nextGlobal = yield* sessions.allowT3McpToolGlobally("html_render");
+        assert.deepEqual(nextGlobal, {
+          mode: "selected",
+          tools: ["html_render", "preview_open"],
+        });
+        assert.isTrue(yield* sessions.shouldAutoApproveT3McpTool(threadB, "html_render"));
+      }).pipe(Effect.provide(layer));
+    }),
   );
 });

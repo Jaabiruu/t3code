@@ -1,5 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import type { RuntimeMode } from "@t3tools/contracts";
+import { canonicalizeT3McpToolName } from "@t3tools/shared/t3McpAutoApprove";
+import { T3_MCP_SERVER_ALIASES } from "@t3tools/shared/t3McpToolPresentation";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -199,6 +201,74 @@ export function acpPermissionDisposition(
     kind: request.toolCall.kind,
     locations: request.toolCall.locations,
   });
+}
+
+const SERVER_QUALIFIED_T3_MCP_TITLES = [
+  /^Run mcp_t3-code_(?<tool>[A-Za-z0-9_]+)\??$/,
+  /^(?:Run )?mcp__t3-code__(?<tool>[A-Za-z0-9_]+)\??$/,
+] as const;
+
+export function extractServerQualifiedT3McpPermissionTool(
+  request: EffectAcpSchema.RequestPermissionRequest,
+): string | undefined {
+  const rawInput = unknownRecord(request.toolCall.rawInput);
+  if (typeof rawInput?.CommandLine === "string" || typeof rawInput?.command === "string") {
+    return undefined;
+  }
+  if (rawInput?.ServerName !== undefined) {
+    if (
+      typeof rawInput.ServerName !== "string" ||
+      !T3_MCP_SERVER_ALIASES.has(rawInput.ServerName.trim())
+    ) {
+      return undefined;
+    }
+    return typeof rawInput.ToolName === "string"
+      ? canonicalizeT3McpToolName(rawInput.ToolName)
+      : undefined;
+  }
+  if (rawInput?.serverName !== undefined || rawInput?.server !== undefined) {
+    const server =
+      typeof rawInput.serverName === "string"
+        ? rawInput.serverName.trim()
+        : typeof rawInput.server === "string"
+          ? rawInput.server.trim()
+          : undefined;
+    if (server === undefined || !T3_MCP_SERVER_ALIASES.has(server)) {
+      return undefined;
+    }
+    const tool =
+      typeof rawInput.toolName === "string"
+        ? rawInput.toolName
+        : typeof rawInput.tool === "string"
+          ? rawInput.tool
+          : undefined;
+    return tool !== undefined ? canonicalizeT3McpToolName(tool) : undefined;
+  }
+  const meta = unknownRecord(request.toolCall._meta);
+  const kiroServer = unknownRecord(meta?.kiro)?.serverName;
+  if (kiroServer !== undefined) {
+    if (typeof kiroServer !== "string" || !T3_MCP_SERVER_ALIASES.has(kiroServer.trim())) {
+      return undefined;
+    }
+    const prefix = `${kiroServer.trim()}::`;
+    const kiroToolId = typeof rawInput?.tool_id === "string" ? rawInput.tool_id.trim() : "";
+    if (!kiroToolId.startsWith(prefix)) return undefined;
+    return canonicalizeT3McpToolName(kiroToolId.slice(prefix.length));
+  }
+  if (meta?.serverId !== undefined) {
+    if (typeof meta.serverId !== "string" || !T3_MCP_SERVER_ALIASES.has(meta.serverId.trim())) {
+      return undefined;
+    }
+    return typeof meta.toolName === "string" ? canonicalizeT3McpToolName(meta.toolName) : undefined;
+  }
+  const title = request.toolCall.title?.trim() ?? "";
+  for (const pattern of SERVER_QUALIFIED_T3_MCP_TITLES) {
+    const matched = pattern.exec(title)?.groups?.tool;
+    if (matched !== undefined) {
+      return canonicalizeT3McpToolName(matched);
+    }
+  }
+  return undefined;
 }
 
 export function acpMcpToolApprovalElicitationDisposition(

@@ -69,6 +69,7 @@ import {
   OrchestrationV2GetShellSnapshotError,
   OrchestrationV2GetThreadProjectionError,
   OrchestrationV2ThreadLaunchError,
+  OrchestrationV2ThreadT3McpAutoApproveError,
   type OrchestrationProjectShell,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
@@ -120,6 +121,7 @@ import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as NativeArtifactsQuery from "./orchestration-v2/NativeArtifactsQuery.ts";
 import * as NativeChildWorkQuery from "./orchestration-v2/NativeChildWorkQuery.ts";
 import * as NativeSwarmQuery from "./orchestration-v2/NativeSwarmQuery.ts";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ServerConfig from "./config.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -1548,6 +1550,7 @@ export const layerWsRpc = (
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const nativeChildWork = yield* NativeChildWorkQuery.NativeChildWorkQuery;
       const nativeSwarmState = yield* NativeSwarmQuery.NativeSwarmQuery;
+      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
       const nativeArtifacts = yield* NativeArtifactsQuery.NativeArtifactsQuery;
       const keybindings = yield* Keybindings.Keybindings;
       const featureFlags = yield* FeatureFlags.FeatureFlags;
@@ -2090,6 +2093,26 @@ export const layerWsRpc = (
           nativeSwarmState.getNativeSwarmState(input),
         [ORCHESTRATION_V2_WS_METHODS.getNativeArtifacts]: (input) =>
           nativeArtifacts.getNativeArtifacts(input),
+        [ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove]: (input) =>
+          mcpSessions.getT3McpAutoApproveState(input.threadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationV2ThreadT3McpAutoApproveError({
+                  threadId: input.threadId,
+                  cause,
+                }),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove]: (input) =>
+          mcpSessions.setThreadT3McpAutoApprove(input.threadId, input.override).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationV2ThreadT3McpAutoApproveError({
+                  threadId: input.threadId,
+                  cause,
+                }),
+            ),
+          ),
         [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input) =>
           threadManagement.getTurnItem(input).pipe(
             Effect.mapError(

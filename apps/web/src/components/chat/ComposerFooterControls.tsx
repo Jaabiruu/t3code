@@ -1,4 +1,10 @@
-import type { ModelSelection, ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ModelSelection,
+  ProviderInstanceId,
+  RuntimeMode,
+  ThreadId,
+} from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { T, useGT, useMessages } from "gt-react";
 import { type ComponentProps, memo, useId, useRef, useState } from "react";
@@ -9,6 +15,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ComposerControl, ComposerControlIcon } from "./ComposerControl";
 import { focusRequestedPermission, useComposerMenuProps } from "./composerEventScope";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
+import { ComposerT3McpAutoApproveControl } from "./ComposerT3McpAutoApproveControl";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { resolveRuntimeModeOption, runtimeModeConfig } from "./runtimeModeConfig";
@@ -27,6 +34,7 @@ export const ComposerFooterModeControls = memo(function ComposerFooterModeContro
   accessDisplay?: "label" | "icon" | "hidden";
   /** Draw the icon in the label color, not muted (the mode differs from the user's default). */
   emphasized?: boolean;
+  t3McpSession?: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId } | null;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
   const gt = useGT();
@@ -89,6 +97,7 @@ export const ComposerFooterModeControls = memo(function ComposerFooterModeContro
         <ComposerPermissionsSection
           runtimeMode={props.runtimeMode}
           runtimeModeOptions={props.runtimeModeOptions}
+          t3McpSession={props.t3McpSession ?? null}
           onRuntimeModeChange={props.onRuntimeModeChange}
         />
       </MenuPopup>
@@ -107,6 +116,7 @@ export const ComposerFooterModeControls = memo(function ComposerFooterModeContro
 export function ComposerPermissionsSection(props: {
   runtimeMode: RuntimeMode;
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
+  t3McpSession?: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId } | null;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
   const gt = useGT();
@@ -187,6 +197,12 @@ export function ComposerPermissionsSection(props: {
           {shown.disabledReason ?? shown.description}
         </span>
       </div>
+      {props.t3McpSession ? (
+        <ComposerT3McpAutoApproveControl
+          environmentId={props.t3McpSession.environmentId}
+          threadId={props.t3McpSession.threadId}
+        />
+      ) : null}
     </div>
   );
 }

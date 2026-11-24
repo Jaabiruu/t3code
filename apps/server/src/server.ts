@@ -18,7 +18,12 @@ import * as NodeHttp from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentHttpApi, type RepositoryIdentity } from "@t3tools/contracts";
+import {
+  DEFAULT_T3_MCP_AUTO_APPROVE_SETTINGS,
+  EnvironmentHttpApi,
+  type RepositoryIdentity,
+  type T3McpAutoApproveSettings,
+} from "@t3tools/contracts";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
@@ -825,7 +830,33 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
       ModelManifest.layerModelCatalog.pipe(Layer.provideMerge(ModelManifest.layer)),
       ResetCreditCoordinator.layer,
       ProviderLatestVersions.layer,
-      McpProviderSessions.layer,
+      Layer.unwrap(
+        Effect.gen(function* () {
+          const settingsService = yield* ServerSettings.ServerSettingsService;
+          const updateGlobalT3McpAutoApprove = Effect.fn(
+            "McpProviderSessions.updateGlobalT3McpAutoApprove",
+          )(function* (updater: (current: T3McpAutoApproveSettings) => T3McpAutoApproveSettings) {
+            const current = yield* settingsService.getSettings;
+            const next = updater(current.t3McpAutoApprove);
+            const saved = yield* settingsService.updateSettings({ t3McpAutoApprove: next });
+            return saved.t3McpAutoApprove;
+          });
+          return McpProviderSessions.layerWithGlobalT3McpAutoApprove({
+            read: settingsService.getSettings.pipe(
+              Effect.map((settings) => settings.t3McpAutoApprove),
+              Effect.orElseSucceed(() => DEFAULT_T3_MCP_AUTO_APPROVE_SETTINGS),
+            ),
+            update: (updater) =>
+              updateGlobalT3McpAutoApprove(updater).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("Failed to persist T3 MCP auto-approval settings.", {
+                    error,
+                  }).pipe(Effect.as(DEFAULT_T3_MCP_AUTO_APPROVE_SETTINGS)),
+                ),
+              ),
+          });
+        }),
+      ).pipe(Layer.provide(layerServerSettings)),
     ),
   ),
   Layer.provideMerge(

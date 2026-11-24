@@ -11,6 +11,7 @@ import {
   acpClientExecuteDisposition,
   acpMcpToolApprovalElicitationDisposition,
   acpPermissionDisposition,
+  extractServerQualifiedT3McpPermissionTool,
   makeAcpClientPolicyGrants,
   type AcpRuntimePolicy,
 } from "./clientPolicy.ts";
@@ -354,5 +355,67 @@ describe("makeAcpClientPolicyGrants", () => {
     grants.recordApproval({ toolKind: "execute", scope: "turn", turnKey: "turn-2" });
     assert.isFalse(grants.allowsExecute("turn-1"));
     assert.isTrue(grants.allowsExecute("turn-2"));
+  });
+});
+
+describe("extractServerQualifiedT3McpPermissionTool", () => {
+  const mcpPermission = (
+    title: string,
+    rawInput?: Record<string, unknown>,
+    _meta?: EffectAcpSchema.RequestPermissionRequest["toolCall"]["_meta"],
+  ): Parameters<typeof extractServerQualifiedT3McpPermissionTool>[0] => ({
+    sessionId: "session-1",
+    options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+    toolCall: {
+      toolCallId: "tool-1",
+      title,
+      kind: "other",
+      ...(rawInput === undefined ? {} : { rawInput }),
+      ...(_meta === undefined ? {} : { _meta }),
+    },
+  });
+
+  it("extracts server-qualified T3 MCP tools and rejects foreign, bare, and shell calls", () => {
+    assert.equal(
+      extractServerQualifiedT3McpPermissionTool(
+        mcpPermission("MCP Tool html_preview", {
+          ServerName: "t3-code",
+          ToolName: "html_preview",
+        }),
+      ),
+      "html_preview",
+    );
+    assert.equal(
+      extractServerQualifiedT3McpPermissionTool(mcpPermission("Run mcp_t3-code_html_render?")),
+      "html_render",
+    );
+    assert.equal(
+      extractServerQualifiedT3McpPermissionTool(
+        mcpPermission(
+          "Call tool",
+          { tool_id: "t3-code::send_to_user" },
+          { kiro: { serverName: "t3-code" } },
+        ),
+      ),
+      "send_to_user",
+    );
+    assert.isUndefined(
+      extractServerQualifiedT3McpPermissionTool(
+        mcpPermission("MCP Tool html_preview", {
+          ServerName: "other-mcp",
+          ToolName: "html_preview",
+        }),
+      ),
+    );
+    assert.isUndefined(
+      extractServerQualifiedT3McpPermissionTool(
+        mcpPermission("Run mcp_t3-code_html_preview", {
+          CommandLine: "Run mcp_t3-code_html_preview",
+        }),
+      ),
+    );
+    assert.isUndefined(
+      extractServerQualifiedT3McpPermissionTool(mcpPermission("Running html_preview")),
+    );
   });
 });

@@ -95,6 +95,7 @@ import {
   ToolActivitySource,
 } from "./providerRuntime.ts";
 import { ThreadTokenUsageSnapshot } from "./providerRuntime.ts";
+import { T3McpAutoApproveSettings } from "./settings.ts";
 
 export const OrchestrationV2Actor = Schema.Literals(["user", "agent", "system"]);
 export type OrchestrationV2Actor = typeof OrchestrationV2Actor.Type;
@@ -4102,6 +4103,8 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getNativeChildWork: "orchestration.getNativeChildWork",
   getNativeSwarmState: "orchestration.getNativeSwarmState",
   getNativeArtifacts: "orchestration.getNativeArtifacts",
+  getThreadT3McpAutoApprove: "orchestration.getThreadT3McpAutoApprove",
+  setThreadT3McpAutoApprove: "orchestration.setThreadT3McpAutoApprove",
   stopWorkflow: "orchestration.stopWorkflow",
   forceStopThread: "orchestration.forceStopThread",
   getTurnItem: "orchestration.getTurnItem",
@@ -4723,6 +4726,39 @@ export class OrchestrationV2GetNativeSwarmStateError extends Schema.TaggedError<
   }
 }
 
+export const OrchestrationV2GetThreadT3McpAutoApproveInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationV2GetThreadT3McpAutoApproveInput =
+  typeof OrchestrationV2GetThreadT3McpAutoApproveInput.Type;
+
+export const OrchestrationV2ThreadT3McpAutoApproveState = Schema.Struct({
+  global: T3McpAutoApproveSettings,
+  sessionOverride: Schema.NullOr(T3McpAutoApproveSettings),
+  effective: T3McpAutoApproveSettings,
+});
+export type OrchestrationV2ThreadT3McpAutoApproveState =
+  typeof OrchestrationV2ThreadT3McpAutoApproveState.Type;
+
+export const OrchestrationV2SetThreadT3McpAutoApproveInput = Schema.Struct({
+  threadId: ThreadId,
+  override: Schema.NullOr(T3McpAutoApproveSettings),
+});
+export type OrchestrationV2SetThreadT3McpAutoApproveInput =
+  typeof OrchestrationV2SetThreadT3McpAutoApproveInput.Type;
+
+export class OrchestrationV2ThreadT3McpAutoApproveError extends Schema.TaggedError<OrchestrationV2ThreadT3McpAutoApproveError>()(
+  "OrchestrationV2ThreadT3McpAutoApproveError",
+  {
+    threadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return "Failed to access thread T3 MCP auto-approval settings.";
+  }
+}
+
 export const OrchestrationV2GetNativeArtifactsInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -4960,6 +4996,14 @@ export const OrchestrationV2RpcSchemas = {
   getNativeSwarmState: {
     input: OrchestrationV2GetNativeSwarmStateInput,
     output: OrchestrationV2GetNativeSwarmStateResult,
+  },
+  getThreadT3McpAutoApprove: {
+    input: OrchestrationV2GetThreadT3McpAutoApproveInput,
+    output: OrchestrationV2ThreadT3McpAutoApproveState,
+  },
+  setThreadT3McpAutoApprove: {
+    input: OrchestrationV2SetThreadT3McpAutoApproveInput,
+    output: OrchestrationV2ThreadT3McpAutoApproveState,
   },
   getNativeArtifacts: {
     input: OrchestrationV2GetNativeArtifactsInput,

@@ -280,6 +280,7 @@ import {
   OrchestrationV2GetNativeArtifactsError,
   OrchestrationV2GetNativeChildWorkError,
   OrchestrationV2GetNativeSwarmStateError,
+  OrchestrationV2ThreadT3McpAutoApproveError,
   OrchestrationV2StopWorkflowError,
   OrchestrationV2ForceStopThreadError,
   OrchestrationV2DispatchCommandError,
@@ -2239,6 +2240,30 @@ const WsOrchestrationV2GetNativeSwarmStateRpc = Rpc.make(
   },
 );
 
+const WsOrchestrationV2GetThreadT3McpAutoApproveRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove,
+  {
+    payload: OrchestrationV2RpcSchemas.getThreadT3McpAutoApprove.input,
+    success: OrchestrationV2RpcSchemas.getThreadT3McpAutoApprove.output,
+    error: Schema.Union([
+      OrchestrationV2ThreadT3McpAutoApproveError,
+      EnvironmentAuthorizationError,
+    ]),
+  },
+);
+
+const WsOrchestrationV2SetThreadT3McpAutoApproveRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove,
+  {
+    payload: OrchestrationV2RpcSchemas.setThreadT3McpAutoApprove.input,
+    success: OrchestrationV2RpcSchemas.setThreadT3McpAutoApprove.output,
+    error: Schema.Union([
+      OrchestrationV2ThreadT3McpAutoApproveError,
+      EnvironmentAuthorizationError,
+    ]),
+  },
+);
+
 const WsOrchestrationV2GetNativeArtifactsRpc = Rpc.make(
   ORCHESTRATION_V2_WS_METHODS.getNativeArtifacts,
   {
@@ -2717,6 +2742,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2GetNativeChildWorkRpc,
   WsOrchestrationV2GetNativeSwarmStateRpc,
+  WsOrchestrationV2GetThreadT3McpAutoApproveRpc,
+  WsOrchestrationV2SetThreadT3McpAutoApproveRpc,
   WsOrchestrationV2GetNativeArtifactsRpc,
   WsOrchestrationV2StopWorkflowRpc,
   WsOrchestrationV2ForceStopThreadRpc,

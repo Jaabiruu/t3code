@@ -75,6 +75,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import { canonicalizeT3McpToolName } from "@t3tools/shared/t3McpAutoApprove";
 import {
   claudeMcpToolName,
   claudeMcpToolNamePart,
@@ -4686,7 +4687,11 @@ export function permissionResultFromDecision(input: {
   /** Under an administrator's ceiling, T3 Code's mode is the only one; Claude cannot switch it. */
   readonly managedCeiling?: boolean;
 }): PermissionResult {
-  if (input.decision === "accept" || input.decision === "acceptForSession") {
+  if (
+    input.decision === "accept" ||
+    input.decision === "acceptForSession" ||
+    input.decision === "acceptAlways"
+  ) {
     return {
       behavior: "allow",
       updatedInput: input.toolInput,
@@ -12938,6 +12943,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             } satisfies PermissionResult;
           }
 
+          const canonicalT3Tool = toolName.startsWith("mcp__t3-code__")
+            ? canonicalizeT3McpToolName(toolName)
+            : undefined;
+          const isReadOnlySandbox =
+            sandboxPolicyKindForClaudeRuntimePolicy(context.input.runtimePolicy) === "readOnly";
+          if (
+            canonicalT3Tool !== undefined &&
+            (!isReadOnlySandbox || CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS.includes(toolName)) &&
+            (yield* mcpSessions.shouldAutoApproveT3McpTool(context.input.threadId, canonicalT3Tool))
+          ) {
+            return {
+              behavior: "allow",
+              updatedInput: nativeToolInput,
+              toolUseID: callbackOptions.toolUseID,
+              decisionClassification: "user_temporary",
+            } satisfies PermissionResult;
+          }
+
           const activePermissionMode =
             (yield* Ref.get(queryContext))?.permissionMode ?? context.queryPolicy.permissionMode;
           const safetyReason = NodeUtil.stripVTControlCharacters(
@@ -12980,6 +13003,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               prompt,
               callbackOptions,
             }),
+            ...(canonicalT3Tool === undefined
+              ? {}
+              : {
+                  options: [
+                    { decision: "cancel", label: "Cancel" },
+                    { decision: "decline", label: "Decline" },
+                    {
+                      decision: "acceptForSession",
+                      label: `Allow ${canonicalT3Tool} this session`,
+                    },
+                    { decision: "acceptAlways", label: `Always allow ${canonicalT3Tool}` },
+                    { decision: "accept", label: "Allow" },
+                  ] satisfies ReadonlyArray<ProviderApprovalOption>,
+                }),
           });
           const decision = yield* Deferred.make<ClaudeApprovalResponse, never>();
           yield* Ref.update(pendingRuntimeRequests, (current) => {
@@ -13026,13 +13063,27 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           );
           if (!(yield* Deferred.isDone(decision))) yield* cancelWithdrawnRequest(artifacts);
 
+          if (canonicalT3Tool !== undefined) {
+            if (resolvedDecision.decision === "acceptForSession") {
+              yield* mcpSessions.allowT3McpToolForSession(context.input.threadId, canonicalT3Tool);
+            } else if (resolvedDecision.decision === "acceptAlways") {
+              yield* mcpSessions.allowT3McpToolGlobally(canonicalT3Tool);
+            }
+          }
+
+          const bypassClaudeSessionPersistence =
+            canonicalT3Tool !== undefined &&
+            (resolvedDecision.decision === "acceptForSession" ||
+              resolvedDecision.decision === "acceptAlways");
+
           return permissionResultFromDecision({
             toolName,
             ...resolvedDecision,
+            ...(bypassClaudeSessionPersistence ? { decision: "accept" as const } : {}),
             toolInput,
             toolUseID: callbackOptions.toolUseID,
             managedCeiling: context.input.runtimePolicy.maxRuntimeMode !== undefined,
-            ...(callbackOptions.suggestions === undefined
+            ...(bypassClaudeSessionPersistence || callbackOptions.suggestions === undefined
               ? {}
               : { suggestions: callbackOptions.suggestions }),
           });

@@ -90,6 +90,15 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("gates thread T3 MCP auto-approve read behind orchestration read and writes behind operate", () => {
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("lets file readers see a task folder and takes source control to add a repository to it", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.workspaceTaskFolder)).toBe(AuthFilesystemReadScope);
     expect(requiredScopeForRpcMethod(WS_METHODS.workspaceAddTaskFolderRepository)).toBe(

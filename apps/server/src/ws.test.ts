@@ -1,4 +1,5 @@
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { WebSocket } from "@effect/platform-node/NodeWS";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Bind an isolated WebSocket negotiation fixture.
@@ -830,6 +831,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(DocumentText.DocumentText)({}),
+  McpProviderSessions.layer,
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(SecretCheck.SecretCheck)({}),
   Layer.mock(WorkspacePaths.WorkspacePaths)({}),
@@ -2943,5 +2945,125 @@ it.effect(
         ["EnvironmentAuthorizationError", "EnvironmentAuthorizationError"],
       );
       assert.deepEqual(calls, []);
+    }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
+);
+
+it.effect(
+  "thread T3 MCP auto-approve RPCs enforce read vs operate scopes and isolate per-thread overrides",
+  () =>
+    Effect.gen(function* () {
+      const mcpTags = [
+        ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove,
+        ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove,
+      ] as const;
+      const mcpRpcs = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<
+            keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
+            (typeof mcpTags)[number]
+          > => !(mcpTags as ReadonlyArray<string>).includes(tag),
+        ),
+      );
+      const makeMcpClient = Effect.fn("test.makeMcpClient")(function* (
+        scopes: ReadonlyArray<AuthEnvironmentScope>,
+      ) {
+        return yield* RpcTest.makeClient(mcpRpcs).pipe(
+          Effect.provide(
+            layerWsRpc(
+              {
+                sessionId: AuthSessionId.make("t3-mcp-auto-approve-test"),
+                subject: "t3-mcp-auto-approve-test",
+                method: "browser-session-cookie",
+                scopes: [...scopes],
+              },
+              {},
+              yield* ServerBrowser.ServerBrowser,
+              () => Effect.void,
+              { secretReferences: true },
+            ).pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  layerUnusedConfigRpcServices,
+                  Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+                  Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+                  Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+                  Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+                  Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+                  Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+                    namedProjectsRoot: "/unused",
+                  }),
+                  Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+                  Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+                  Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+                ),
+              ),
+              Layer.merge(RpcAuthorization.layer(scopes)),
+            ),
+          ),
+        );
+      });
+
+      const threadId = ThreadId.make("thread-mcp-rpc-1");
+      const otherThreadId = ThreadId.make("thread-mcp-rpc-2");
+      const readerClient = yield* makeMcpClient([AuthOrchestrationReadScope]);
+      const initial = yield* readerClient[ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove]({
+        threadId,
+      });
+      assert.deepEqual(initial, {
+        global: { mode: "off", tools: [] },
+        sessionOverride: null,
+        effective: { mode: "off", tools: [] },
+      });
+
+      const writeDenied = yield* readerClient[
+        ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove
+      ]({
+        threadId,
+        override: { mode: "selected", tools: ["html_preview"] },
+      }).pipe(Effect.flip);
+      assert.equal(writeDenied._tag, "EnvironmentAuthorizationError");
+
+      const operatorClient = yield* makeMcpClient([
+        AuthOrchestrationReadScope,
+        AuthOrchestrationOperateScope,
+      ]);
+      const updated = yield* operatorClient[ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove]({
+        threadId,
+        override: { mode: "selected", tools: ["html_preview", "mcp_t3-code_html_render"] },
+      });
+      assert.deepEqual(updated, {
+        global: { mode: "off", tools: [] },
+        sessionOverride: { mode: "selected", tools: ["html_preview", "html_render"] },
+        effective: { mode: "selected", tools: ["html_preview", "html_render"] },
+      });
+
+      const persisted = yield* operatorClient[
+        ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove
+      ]({ threadId });
+      assert.deepEqual(persisted, updated);
+
+      const isolated = yield* operatorClient[ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove](
+        { threadId: otherThreadId },
+      );
+      assert.deepEqual(isolated, initial);
+
+      const reset = yield* operatorClient[ORCHESTRATION_V2_WS_METHODS.setThreadT3McpAutoApprove]({
+        threadId,
+        override: null,
+      });
+      assert.deepEqual(reset, initial);
+
+      const persistedReset = yield* operatorClient[
+        ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove
+      ]({ threadId });
+      assert.deepEqual(persistedReset, initial);
+
+      const forbiddenClient = yield* makeMcpClient([AuthAccessReadScope]);
+      const readDenied = yield* forbiddenClient[
+        ORCHESTRATION_V2_WS_METHODS.getThreadT3McpAutoApprove
+      ]({ threadId }).pipe(Effect.flip);
+      assert.equal(readDenied._tag, "EnvironmentAuthorizationError");
     }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
 );
