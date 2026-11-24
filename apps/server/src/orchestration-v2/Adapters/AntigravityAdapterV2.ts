@@ -16,9 +16,11 @@ import * as Scope from "effect/Scope";
 import * as EffectAcpErrors from "effect-acp/errors";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { PULL_REQUEST_LINKING_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import type { AntigravityAuth } from "../../provider/AntigravityAuth.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import type { AcpToolCallState } from "@t3tools/provider-acp/server/runtimeModel";
 import {
   antigravityAppendsSystemPrompt,
   antigravityPermissionDisposition,
@@ -26,6 +28,7 @@ import {
   antigravityRuntimeModeForSessionMode,
   antigravitySteersWithPrompt,
   applyAntigravityAcpModelSelection,
+  applyAntigravityOrchestratorDefaults,
   buildAntigravityPrompt,
   type AntigravityAcpRuntimeInput,
 } from "../../provider/acp/AntigravityAcpSupport.ts";
@@ -44,12 +47,16 @@ import {
   antigravityCommandOutlivesPrompt,
   antigravitySubagentOutput,
   classifyAntigravitySubagentToolCall,
+  extractAntigravityArtifactWrite,
   extractAntigravityUserInputQuestion,
   makeAntigravityReadRepair,
   makeAntigravityUserInputResponse,
   normalizeAntigravityToolCall,
 } from "../../provider/acp/AntigravityProtocol.ts";
-import { isAntigravitySignInRequiredError } from "../../provider/antigravityAuthSupport.ts";
+import {
+  isAntigravitySignInRequiredError,
+  type AntigravityOrchestratorConfig,
+} from "../../provider/antigravityAuthSupport.ts";
 import {
   AcpProviderCapabilitiesV2,
   makeAcpAdapterV2,
@@ -66,6 +73,11 @@ const AntigravityProviderCapabilitiesV2 = {
     supportsModelSwitchInSession: true,
     supportsRuntimeModeSwitchInSession: true,
   },
+  planning: {
+    ...AcpProviderCapabilitiesV2.planning,
+    emitsProposedPlan: true,
+    supportsNativeArtifacts: true,
+  },
   tools: {
     ...AcpProviderCapabilitiesV2.tools,
     supportsMcpTools: true,
@@ -73,8 +85,23 @@ const AntigravityProviderCapabilitiesV2 = {
   subagents: {
     ...AcpProviderCapabilitiesV2.subagents,
     supportsSubagents: true,
+    supportsNativeSwarm: false,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
+
+const capturePlanCallbacks = new WeakMap<
+  AcpSessionRuntime.AcpSessionRuntime["Service"],
+  (input: { readonly planMarkdown: string }) => Effect.Effect<void>
+>();
+
+/** Extracts proposed plan markdown from plan artifact writes or feedback-requested writes. */
+function extractAntigravityProposedPlanMarkdown(toolCall: AcpToolCallState): string | undefined {
+  const write = extractAntigravityArtifactWrite(toolCall);
+  if (!write) return undefined;
+  if (write.requestFeedback !== true && !write.isPlanPath) return undefined;
+  const markdown = write.content?.trim();
+  return markdown && markdown.length > 0 ? markdown : undefined;
+}
 
 /** Thread variables reach the driver here; `makeAntigravityAcpRuntime` never reads them. */
 export type AntigravityAdapterV2RuntimeInput = Omit<
@@ -95,6 +122,8 @@ export interface AntigravityAdapterV2Options {
   readonly withProcess: AntigravityAuth["withProcess"];
   readonly defaultModel: Effect.Effect<string | undefined>;
   readonly supportsNativeGoals?: Effect.Effect<boolean>;
+  readonly supportsNativeSwarm?: boolean | Effect.Effect<boolean>;
+  readonly orchestrator?: AntigravityOrchestratorConfig;
   readonly onSessionStarted?: (
     started: AcpSessionRuntime.AcpSessionRuntimeStartResult,
     cwd: string,
@@ -164,10 +193,11 @@ export function makeAntigravityAcpAdapterFlavor(
         .pipe(Effect.provideService(Scope.Scope, scope));
       // Repair keeps state across updates, so each runtime must have one session-update handler.
       const reads = makeAntigravityReadRepair();
+      const toolCalls = new Map<string, AcpToolCallState>();
       // Served reads are reported from the read handler, so they take turns with agent updates.
       const updates = yield* Semaphore.make(1);
       let projectUpdate: Parameters<typeof runtime.handleSessionUpdate>[0] | undefined;
-      return {
+      const wrappedRuntime: typeof runtime = {
         ...runtime,
         handleReadTextFile: (handler) =>
           runtime.handleReadTextFile((request, context) =>
@@ -191,11 +221,70 @@ export function makeAntigravityAcpAdapterFlavor(
             ),
           ),
         prompt: (payload, promptOptions) =>
-          Effect.sync(reads.reset).pipe(Effect.andThen(runtime.prompt(payload, promptOptions))),
+          Effect.sync(() => {
+            reads.reset();
+            toolCalls.clear();
+          }).pipe(Effect.andThen(runtime.prompt(payload, promptOptions))),
         handleSessionUpdate: (handler) => {
           projectUpdate = handler;
           return runtime.handleSessionUpdate((notification) =>
-            updates.withPermit(handler(reads.repair(notification))),
+            Effect.gen(function* () {
+              const repaired = reads.repair(notification);
+              yield* updates.withPermit(handler(repaired));
+              const update = repaired.update;
+              if (
+                update.sessionUpdate !== "tool_call" &&
+                update.sessionUpdate !== "tool_call_update"
+              ) {
+                return;
+              }
+              const previous = toolCalls.get(update.toolCallId);
+              const kind = update.kind ?? previous?.kind;
+              const rawStatus = update.status ?? previous?.status;
+              const status: AcpToolCallState["status"] =
+                rawStatus === "pending" ||
+                rawStatus === "inProgress" ||
+                rawStatus === "requiresAction" ||
+                rawStatus === "completed" ||
+                rawStatus === "failed"
+                  ? rawStatus
+                  : rawStatus === "in_progress"
+                    ? "inProgress"
+                    : rawStatus === "requires_action"
+                      ? "requiresAction"
+                      : undefined;
+              const title = typeof update.title === "string" ? update.title : previous?.title;
+              const rawInput =
+                update.rawInput !== undefined ? update.rawInput : previous?.data.rawInput;
+              const rawOutput =
+                update.rawOutput !== undefined ? update.rawOutput : previous?.data.rawOutput;
+              const locations =
+                update.locations !== undefined ? update.locations : previous?.data.locations;
+              const merged: AcpToolCallState = {
+                toolCallId: update.toolCallId,
+                ...(kind !== undefined ? { kind } : {}),
+                ...(status !== undefined ? { status } : {}),
+                ...(title !== undefined ? { title } : {}),
+                ...(previous?.command !== undefined ? { command: previous.command } : {}),
+                ...(previous?.detail !== undefined ? { detail: previous.detail } : {}),
+                data: {
+                  ...previous?.data,
+                  ...(kind !== undefined ? { kind } : {}),
+                  ...(title !== undefined ? { title } : {}),
+                  ...(rawInput !== undefined ? { rawInput } : {}),
+                  ...(rawOutput !== undefined ? { rawOutput } : {}),
+                  ...(locations !== undefined ? { locations } : {}),
+                },
+              };
+              toolCalls.set(update.toolCallId, merged);
+              if (merged.status === "completed") {
+                const planMarkdown = extractAntigravityProposedPlanMarkdown(merged);
+                const capture = capturePlanCallbacks.get(wrappedRuntime);
+                if (planMarkdown !== undefined && capture !== undefined) {
+                  yield* capture({ planMarkdown }).pipe(Effect.ignore);
+                }
+              }
+            }),
           );
         },
         start: () =>
@@ -206,7 +295,8 @@ export function makeAntigravityAcpAdapterFlavor(
                 (started) => options.onSessionStarted?.(started, input.cwd) ?? Effect.void,
               ),
             ),
-      } satisfies typeof runtime;
+      };
+      return wrappedRuntime;
     },
     Effect.provideService(SecureRandom.SecureRandom, options.random),
     Effect.mapError((cause): EffectAcpErrors.AcpError =>
@@ -219,8 +309,20 @@ export function makeAntigravityAcpAdapterFlavor(
   return {
     driver: ANTIGRAVITY_PROVIDER,
     runtimeHarness: "Antigravity",
-    capabilities: AntigravityProviderCapabilitiesV2,
+    capabilities: {
+      ...AntigravityProviderCapabilitiesV2,
+      subagents: {
+        ...AntigravityProviderCapabilitiesV2.subagents,
+        supportsNativeSwarm:
+          typeof options.supportsNativeSwarm === "boolean" ? options.supportsNativeSwarm : false,
+      },
+    },
     supportsNativeGoals: options.supportsNativeGoals ?? Effect.succeed(false),
+    registerExtensions: (context) =>
+      Effect.sync(() => {
+        capturePlanCallbacks.set(context.runtime, context.captureProposedPlan);
+      }),
+    extractProposedPlanMarkdown: extractAntigravityProposedPlanMarkdown,
     // Agents that advertise HTTP MCP skip the stdio bridge process; others keep stdio.
     mcpOverHttp: true,
     sessionCarriesPullRequestLinking: antigravityAppendsSystemPrompt,
@@ -262,13 +364,20 @@ export function makeAntigravityAcpAdapterFlavor(
       modelSelection,
     }) {
       const defaultModel = yield* options.defaultModel;
-      return yield* applyAntigravityAcpModelSelection({
+      const selectedModel = yield* applyAntigravityAcpModelSelection({
         runtime,
         model:
           modelSelection.model === ANTIGRAVITY_DEFAULT_MODEL ? undefined : modelSelection.model,
         defaultModel,
         mapError: (cause) => cause,
       });
+      yield* applyAntigravityOrchestratorDefaults({
+        runtime,
+        orchestrator: options.orchestrator,
+        selectedModel,
+        explicitOptionIds: new Set((modelSelection.options ?? []).map((option) => option.id)),
+      });
+      return selectedModel;
     }),
     sessionModeForPolicy: (policy) => antigravityPermissionMode(policy.runtimeMode),
     runtimeModeForSessionMode: antigravityRuntimeModeForSessionMode,
@@ -330,7 +439,23 @@ export const makeAntigravityAdapterV2 = Effect.fn("makeAntigravityAdapterV2")(fu
     path: yield* Path.Path,
     host: yield* ProviderHost.ProviderHost,
   };
-  return yield* makeAcpAdapterV2({
+  const readSwarmSupport =
+    options.supportsNativeSwarm === undefined
+      ? Effect.succeed(false)
+      : typeof options.supportsNativeSwarm === "boolean"
+        ? Effect.succeed(options.supportsNativeSwarm)
+        : options.supportsNativeSwarm;
+  const withSwarmCapability = (
+    capabilities: OrchestrationV2ProviderCapabilities,
+    supportsNativeSwarm: boolean,
+  ): OrchestrationV2ProviderCapabilities => ({
+    ...capabilities,
+    subagents: {
+      ...capabilities.subagents,
+      supportsNativeSwarm,
+    },
+  });
+  const baseAdapter = yield* makeAcpAdapterV2({
     instanceId: options.instanceId,
     flavor: makeAntigravityAcpAdapterFlavor({ ...options, ...services }),
     selfInvocation: options.selfInvocation,
@@ -338,5 +463,29 @@ export const makeAntigravityAdapterV2 = Effect.fn("makeAntigravityAdapterV2")(fu
     ...(options.continuationRequests === undefined
       ? {}
       : { continuationRequests: options.continuationRequests }),
+  });
+  return ProviderAdapter.ProviderAdapterV2.of({
+    ...baseAdapter,
+    getCapabilities: Effect.fn("AntigravityAdapterV2.getCapabilities")(function* () {
+      const [capabilities, supportsNativeSwarm] = yield* Effect.all([
+        baseAdapter.getCapabilities(),
+        readSwarmSupport,
+      ]);
+      return withSwarmCapability(capabilities, supportsNativeSwarm);
+    }),
+    openSession: Effect.fn("AntigravityAdapterV2.openSession")(function* (input) {
+      const session = yield* baseAdapter.openSession(input);
+      const supportsNativeSwarm = yield* readSwarmSupport;
+      return {
+        ...session,
+        providerSession: {
+          ...session.providerSession,
+          capabilities: withSwarmCapability(
+            session.providerSession.capabilities,
+            supportsNativeSwarm,
+          ),
+        },
+      };
+    }),
   });
 });

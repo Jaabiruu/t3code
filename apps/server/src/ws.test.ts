@@ -17,6 +17,7 @@ import {
   AuthSourceControlWriteScope,
   ORCHESTRATION_PROTOCOL_VERSION,
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+  ORCHESTRATION_V2_WS_METHODS,
   EnvironmentId,
   EventId,
   GitManagerError,
@@ -84,7 +85,9 @@ import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts"
 import * as ProviderInstallation from "./provider/providerInstallation.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import * as NativeArtifactsQuery from "./orchestration-v2/NativeArtifactsQuery.ts";
 import * as NativeChildWorkQuery from "./orchestration-v2/NativeChildWorkQuery.ts";
+import * as NativeSwarmQuery from "./orchestration-v2/NativeSwarmQuery.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as ThreadViewers from "./orchestration-v2/ThreadViewers.ts";
 import * as CodexInstallation from "./provider/CodexInstallation.ts";
@@ -845,6 +848,8 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(BackgroundPolicy.BackgroundPolicy)({}),
   Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({}),
   Layer.mock(NativeChildWorkQuery.NativeChildWorkQuery)({}),
+  Layer.mock(NativeSwarmQuery.NativeSwarmQuery)({}),
+  Layer.mock(NativeArtifactsQuery.NativeArtifactsQuery)({}),
   Layer.mock(CommandOutputHub.CommandOutputHub)({}),
   ThreadViewers.layer,
   Layer.mock(CodexInstallation.CodexInstallation)({ managedDirectory: "/unused" }),
@@ -2809,4 +2814,134 @@ it.effect("a session that can only read sees a workflow run but cannot steer it"
     );
     assert.deepEqual(calls, []);
   }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
+);
+
+const nativeQueryTags = [
+  ORCHESTRATION_V2_WS_METHODS.getNativeSwarmState,
+  ORCHESTRATION_V2_WS_METHODS.getNativeArtifacts,
+] as const;
+const nativeQueryRpcs = WsRpcGroup.omit(
+  ...[...WsRpcGroup.requests.keys()].filter(
+    (
+      tag,
+    ): tag is Exclude<
+      keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
+      (typeof nativeQueryTags)[number]
+    > => !(nativeQueryTags as ReadonlyArray<string>).includes(tag),
+  ),
+);
+
+const makeNativeQueryClient = Effect.fn("test.makeNativeQueryClient")(function* (
+  scopes: ReadonlyArray<AuthEnvironmentScope>,
+  calls: Array<unknown>,
+) {
+  const services = Layer.mergeAll(
+    layerUnusedConfigRpcServices,
+    Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+    Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+    Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+    Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+    Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+    Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+    Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+    Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+    Layer.mock(NativeSwarmQuery.NativeSwarmQuery)({
+      getNativeSwarmState: (input) =>
+        Effect.sync(() => {
+          calls.push({ getNativeSwarmState: input });
+          return {
+            active: true,
+            title: "Test Swarm",
+            overview: null,
+            members: [],
+            posts: [],
+            edges: [],
+            updatedAt: "2026-11-23T12:00:00.000Z",
+          };
+        }),
+    }),
+    Layer.mock(NativeArtifactsQuery.NativeArtifactsQuery)({
+      getNativeArtifacts: (input) =>
+        Effect.sync(() => {
+          calls.push({ getNativeArtifacts: input });
+          return {
+            artifacts: [
+              {
+                id: "implementation_plan.md",
+                fileName: "implementation_plan.md",
+                title: "Plan",
+                summary: "Summary",
+                userFacing: true,
+                requestFeedback: true,
+                kind: "plan" as const,
+                content: "# Plan",
+                truncated: false,
+                updatedAt: "2026-11-23T12:00:00.000Z",
+                mediaPaths: [],
+              },
+            ],
+          };
+        }),
+    }),
+  );
+  return yield* RpcTest.makeClient(nativeQueryRpcs).pipe(
+    Effect.provide(
+      layerWsRpc(
+        {
+          sessionId: AuthSessionId.make("native-query-test"),
+          subject: "native-query-test",
+          method: "browser-session-cookie",
+          scopes: [...scopes],
+        },
+        {},
+        yield* ServerBrowser.ServerBrowser,
+        () => Effect.void,
+        { secretReferences: true },
+      ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
+    ),
+  );
+});
+
+it.effect(
+  "native swarm and artifacts RPCs require AuthOrchestrationReadScope and forward queries",
+  () =>
+    Effect.gen(function* () {
+      const calls: Array<unknown> = [];
+      const targetThreadId = ThreadId.make("thread-rpc-native");
+      const readerClient = yield* makeNativeQueryClient([AuthOrchestrationReadScope], calls);
+
+      const swarmState = yield* readerClient[ORCHESTRATION_V2_WS_METHODS.getNativeSwarmState]({
+        threadId: targetThreadId,
+      });
+      assert.isTrue(swarmState.active);
+      assert.equal(swarmState.title, "Test Swarm");
+
+      const artifactsRes = yield* readerClient[ORCHESTRATION_V2_WS_METHODS.getNativeArtifacts]({
+        threadId: targetThreadId,
+      });
+      assert.equal(artifactsRes.artifacts.length, 1);
+      assert.equal(artifactsRes.artifacts[0]?.fileName, "implementation_plan.md");
+
+      assert.deepEqual(calls, [
+        { getNativeSwarmState: { threadId: targetThreadId } },
+        { getNativeArtifacts: { threadId: targetThreadId } },
+      ]);
+
+      calls.length = 0;
+      const forbiddenClient = yield* makeNativeQueryClient([AuthAccessReadScope], calls);
+      const refused = yield* Effect.all([
+        forbiddenClient[ORCHESTRATION_V2_WS_METHODS.getNativeSwarmState]({
+          threadId: targetThreadId,
+        }).pipe(Effect.flip),
+        forbiddenClient[ORCHESTRATION_V2_WS_METHODS.getNativeArtifacts]({
+          threadId: targetThreadId,
+        }).pipe(Effect.flip),
+      ]);
+      assert.deepEqual(
+        refused.map((error) => error._tag),
+        ["EnvironmentAuthorizationError", "EnvironmentAuthorizationError"],
+      );
+      assert.deepEqual(calls, []);
+    }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
 );

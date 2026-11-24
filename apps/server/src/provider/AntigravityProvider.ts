@@ -65,14 +65,33 @@ type ThinkingConfig = NonNullable<ReturnType<typeof antigravityThinkingConfig>>;
 /** Thinking options each model reported when selected; `null` means it has none. */
 export type AntigravityThinkingLevels = ReadonlyMap<string, ThinkingConfig | null>;
 
-function thinkingCapabilities(config: ThinkingConfig | null | undefined, observed: boolean) {
-  const descriptor = config
-    ? acpProviderOptionDescriptors({ configOptions: [config], modeState: undefined })[0]
+function modelCapabilitiesFromSession(input: {
+  readonly thinking: ThinkingConfig | null | undefined;
+  readonly observedThinking: boolean;
+  readonly extraConfigOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+}) {
+  const thinkingDescriptor = input.thinking
+    ? acpProviderOptionDescriptors({ configOptions: [input.thinking], modeState: undefined })[0]
     : undefined;
-  if (descriptor?.type !== "select") return EMPTY_MODEL_CAPABILITIES;
-  // Another model's selected level is not this model's default.
-  const { currentValue: _currentValue, ...unobserved } = descriptor;
-  return createModelCapabilities({ optionDescriptors: [observed ? descriptor : unobserved] });
+  const thinkingDescriptors =
+    thinkingDescriptor?.type === "select"
+      ? [
+          input.observedThinking
+            ? thinkingDescriptor
+            : (({ currentValue: _currentValue, ...unobserved }) => unobserved)(thinkingDescriptor),
+        ]
+      : [];
+  const extraDescriptors =
+    input.extraConfigOptions.length > 0
+      ? acpProviderOptionDescriptors({
+          configOptions: input.extraConfigOptions,
+          modeState: undefined,
+        })
+      : [];
+  const optionDescriptors = [...thinkingDescriptors, ...extraDescriptors];
+  return optionDescriptors.length > 0
+    ? createModelCapabilities({ optionDescriptors })
+    : EMPTY_MODEL_CAPABILITIES;
 }
 
 export function buildAntigravityModelsFromSession(
@@ -94,6 +113,14 @@ export function buildAntigravityModelsFromSession(
           })) ?? [])
         : [];
   const currentThinking = antigravityThinkingConfig(setup.configOptions);
+  const extraConfigOptions = (setup.configOptions ?? []).filter(
+    (option) =>
+      option.id !== "model" &&
+      option.category !== "model" &&
+      option.category !== "collaboration_mode" &&
+      option.category !== "mode" &&
+      option.category !== "thought_level",
+  );
   const seen = new Set<string>();
   // The agent can list two IDs under one name; label the later ones so the picker tells them apart.
   const names = new Set<string>();
@@ -115,8 +142,16 @@ export function buildAntigravityModelsFromSession(
           : {}),
         capabilities:
           observed === undefined
-            ? thinkingCapabilities(currentThinking, false)
-            : thinkingCapabilities(observed, true),
+            ? modelCapabilitiesFromSession({
+                thinking: currentThinking,
+                observedThinking: false,
+                extraConfigOptions,
+              })
+            : modelCapabilitiesFromSession({
+                thinking: observed,
+                observedThinking: true,
+                extraConfigOptions,
+              }),
       },
     ];
   });

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
+import * as Rpc from "effect/rpc/Rpc";
 
 import {
   EnvironmentId,
@@ -13,7 +15,17 @@ import {
 } from "./index.ts";
 import {
   latestProviderTurnForAttempt,
+  ORCHESTRATION_V2_WS_METHODS,
   OrchestrationV2CheckpointFileSummary,
+  OrchestrationV2GetNativeArtifactsError,
+  OrchestrationV2GetNativeArtifactsInput,
+  OrchestrationV2GetNativeArtifactsResult,
+  OrchestrationV2GetNativeSwarmStateError,
+  OrchestrationV2GetNativeSwarmStateInput,
+  OrchestrationV2GetNativeSwarmStateResult,
+  OrchestrationV2NativeArtifactKind,
+  OrchestrationV2NativeSwarmMemberState,
+  OrchestrationV2NativeSwarmPostKind,
   repositoryRewindCheckpoint,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
@@ -27,6 +39,7 @@ import {
   OrchestrationV2TurnItemJson,
   withMessageSenderNote,
 } from "./orchestrationV2.ts";
+import { WsRpcGroup } from "./rpc.ts";
 
 const now = DateTime.makeUnsafe("2026-04-20T00:00:00.000Z");
 
@@ -45,6 +58,9 @@ const decodeOrchestrationV2ProviderThread = Schema.decodeUnknownSync(Orchestrati
 const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
   OrchestrationV2ProviderCapabilities,
 );
+const decodeNativeSwarmMemberState = Schema.decodeSync(OrchestrationV2NativeSwarmMemberState);
+const decodeNativeSwarmPostKind = Schema.decodeSync(OrchestrationV2NativeSwarmPostKind);
+const decodeNativeArtifactKind = Schema.decodeSync(OrchestrationV2NativeArtifactKind);
 
 describe("orchestration V2 contracts", () => {
   it("decodes thread event types from a newer server as skippable items", () => {
@@ -743,5 +759,278 @@ describe("withMessageSenderNote", () => {
     [{ createdBy: "agent", creationSource: "server" }, "Hi", "Hi"],
   ] as const)("labels %j's message %j for the provider", (message, text, expected) => {
     expect(withMessageSenderNote(message, text)).toBe(expected);
+  });
+});
+
+describe("native swarm and artifact contracts", () => {
+  it("supports optional supportsNativeArtifacts and supportsNativeSwarm capability flags", () => {
+    const base = {
+      sessions: {
+        supportsMultipleProviderThreadsPerSession: false,
+        supportsModelSwitchInSession: false,
+        supportsProviderSwitchingViaHandoff: false,
+        supportsRuntimeModeSwitchInSession: false,
+        pendingRequestsSurviveRestart: false,
+      },
+      threads: {
+        canCreateEmptyThread: true,
+        canReadThreadSnapshot: false,
+        canRollbackThread: false,
+        canForkThread: false,
+        canForkFromTurn: false,
+        canForkFromSubagentThread: false,
+        exposesNativeThreadId: true,
+      },
+      turns: {
+        exposesNativeTurnId: false,
+        emitsTurnStarted: true,
+        emitsTurnCompleted: true,
+        supportsInterrupt: true,
+        supportsActiveSteering: false,
+        supportsSteeringByInterruptRestart: true,
+        supportsQueuedMessages: false,
+        terminalStatusQuality: "strong" as const,
+      },
+      streaming: {
+        streamsAssistantText: true,
+        streamsReasoning: true,
+        streamsToolOutput: true,
+        streamsPlanText: false,
+        emitsMessageCompleted: true,
+      },
+      tools: {
+        exposesToolItemIds: true,
+        emitsToolStarted: true,
+        emitsToolCompleted: true,
+        emitsToolOutput: true,
+        supportsMcpTools: false,
+        supportsDynamicToolCallbacks: false,
+      },
+      approvals: {
+        supportsCommandApproval: true,
+        supportsFileReadApproval: true,
+        supportsFileChangeApproval: true,
+        supportsApplyPatchApproval: false,
+        approvalsHaveNativeRequestIds: false,
+        approvalCallbacksAreLiveOnly: true,
+        approvalsCanOriginateFromSubagents: false,
+      },
+      planning: {
+        emitsPlanUpdated: true,
+        emitsTodoList: true,
+        emitsProposedPlan: false,
+        supportsStructuredQuestions: true,
+        planDeltasHaveItemIds: false,
+      },
+      subagents: {
+        supportsSubagents: true,
+        exposesSubagentThreadIds: false,
+        emitsSubagentLifecycle: false,
+        canWaitForSubagents: false,
+        canCloseSubagents: false,
+        canForkSubagentThread: false,
+      },
+      context: {
+        acceptsSystemContext: false,
+        acceptsDeveloperContext: false,
+        acceptsSyntheticUserContext: true,
+        canGenerateSummaries: false,
+        canConsumeHandoffSummaries: false,
+        supportsDeltaHandoff: false,
+        supportsFullThreadHandoff: false,
+        maxRecommendedHandoffChars: null,
+      },
+      checkpointing: {
+        appCanCheckpointFilesystem: true,
+        supportsNestedCheckpointScopes: false,
+        providerCanRollbackConversation: false,
+        providerRollbackReturnsSnapshot: false,
+        providerCanReadConversationSnapshot: false,
+      },
+      identity: {
+        nativeThreadIds: "strong" as const,
+        nativeTurnIds: "weak" as const,
+        nativeItemIds: "weak" as const,
+        nativeRequestIds: "weak" as const,
+      },
+    };
+
+    const legacy = decodeOrchestrationV2ProviderCapabilities(base);
+    expect(legacy.planning.supportsNativeArtifacts).toBeUndefined();
+    expect(legacy.subagents.supportsNativeSwarm).toBeUndefined();
+
+    const enabled = decodeOrchestrationV2ProviderCapabilities({
+      ...base,
+      planning: { ...base.planning, supportsNativeArtifacts: true },
+      subagents: { ...base.subagents, supportsNativeSwarm: true },
+    });
+    expect(enabled.planning.supportsNativeArtifacts).toBe(true);
+    expect(enabled.subagents.supportsNativeSwarm).toBe(true);
+  });
+
+  it("decodes and encodes native swarm state RPC schemas and error tags", () => {
+    expect(ORCHESTRATION_V2_WS_METHODS.getNativeSwarmState).toBe(
+      "orchestration.getNativeSwarmState",
+    );
+    expect(OrchestrationV2RpcSchemas.getNativeSwarmState.input).toBe(
+      OrchestrationV2GetNativeSwarmStateInput,
+    );
+    expect(OrchestrationV2RpcSchemas.getNativeSwarmState.output).toBe(
+      OrchestrationV2GetNativeSwarmStateResult,
+    );
+
+    const rpc = WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.getNativeSwarmState);
+    if (rpc === undefined) throw new Error("getNativeSwarmState is not registered");
+
+    const decodePayload = Schema.decodeUnknownSync(Schema.toCodecJson(rpc.payloadSchema));
+    expect(decodePayload({ threadId: "thread-1" })).toEqual({
+      threadId: ThreadId.make("thread-1"),
+    });
+    expect(() => decodePayload({ threadId: "   " })).toThrow();
+
+    const sampleResult = {
+      active: true,
+      title: "Contracts Stage",
+      overview: {
+        goalTitle: "Implement contracts",
+        goalLine: "Define swarm and artifact RPCs",
+        tasks: { "task-1": "in_progress" },
+        threads: [
+          {
+            id: "conv-1",
+            title: "contracts",
+            goal: "Stage 1",
+            tasks: ["task-1"],
+          },
+        ],
+      },
+      members: [
+        {
+          name: "contracts",
+          conversationId: "conv-1",
+          role: "worker",
+          model: "gemini-3-pro",
+          state: "working" as const,
+          latestToolCall: "edit_file",
+          updatedAt: "2026-11-24T00:00:00.000Z",
+          steps: [
+            {
+              index: 0,
+              type: "tool",
+              status: "completed",
+              text: "Edited schemas",
+              toolCalls: [{ name: "edit_file", input: "{}" }],
+            },
+          ],
+        },
+        {
+          name: "verifier",
+          conversationId: null,
+          role: null,
+          model: null,
+          state: "waiting" as const,
+          latestToolCall: null,
+          updatedAt: null,
+          steps: null,
+        },
+      ],
+      posts: [
+        {
+          id: "post-1",
+          seq: 1,
+          sender: "coordinator",
+          mentions: ["contracts"],
+          content: "@contracts begin",
+          timestamp: "2026-11-24T00:00:00.000Z",
+          kind: "brief" as const,
+          screenshotPath: null,
+          screenshotCaption: null,
+        },
+      ],
+      edges: [
+        {
+          from: "coordinator",
+          to: "contracts",
+          count: 1,
+          lastSeq: 1,
+          lastActivityAt: "2026-11-24T00:00:00.000Z",
+        },
+      ],
+      updatedAt: "2026-11-24T00:00:00.000Z",
+    };
+
+    const successCodec = Schema.toCodecJson(rpc.successSchema);
+    const decodedResult = Schema.decodeSync(successCodec)(sampleResult);
+    expect(decodedResult).toEqual(sampleResult);
+    expect(Schema.encodeSync(successCodec)(decodedResult)).toEqual(sampleResult);
+
+    for (const state of ["working", "waiting", "stopped", "killed"] as const) {
+      expect(decodeNativeSwarmMemberState(state)).toBe(state);
+    }
+    for (const kind of ["brief", "update", "question", "result", "system"] as const) {
+      expect(decodeNativeSwarmPostKind(kind)).toBe(kind);
+    }
+
+    const exitCodec = Schema.toCodecJson(Rpc.exitSchema(rpc));
+    const err = new OrchestrationV2GetNativeSwarmStateError({
+      threadId: ThreadId.make("thread-1"),
+    });
+    expect(err._tag).toBe("OrchestrationV2GetNativeSwarmStateError");
+    const decodedExit = Schema.decodeSync(exitCodec)(Schema.encodeSync(exitCodec)(Exit.fail(err)));
+    expect(Exit.isFailure(decodedExit)).toBe(true);
+  });
+
+  it("decodes and encodes native artifacts RPC schemas and error tags", () => {
+    expect(ORCHESTRATION_V2_WS_METHODS.getNativeArtifacts).toBe("orchestration.getNativeArtifacts");
+    expect(OrchestrationV2RpcSchemas.getNativeArtifacts.input).toBe(
+      OrchestrationV2GetNativeArtifactsInput,
+    );
+    expect(OrchestrationV2RpcSchemas.getNativeArtifacts.output).toBe(
+      OrchestrationV2GetNativeArtifactsResult,
+    );
+
+    const rpc = WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.getNativeArtifacts);
+    if (rpc === undefined) throw new Error("getNativeArtifacts is not registered");
+
+    const decodePayload = Schema.decodeUnknownSync(Schema.toCodecJson(rpc.payloadSchema));
+    expect(decodePayload({ threadId: "thread-2" })).toEqual({
+      threadId: ThreadId.make("thread-2"),
+    });
+    expect(() => decodePayload({ threadId: "" })).toThrow();
+
+    const sampleResult = {
+      artifacts: [
+        {
+          id: "art-1",
+          fileName: "implementation_plan.md",
+          title: "Implementation Plan",
+          summary: "Detailed plan",
+          userFacing: true,
+          requestFeedback: true,
+          kind: "plan" as const,
+          content: "# Plan\nDetails",
+          truncated: false,
+          updatedAt: "2026-11-24T00:00:00.000Z",
+          mediaPaths: ["/tmp/diagram.png"],
+        },
+      ],
+    };
+
+    const successCodec = Schema.toCodecJson(rpc.successSchema);
+    const decodedResult = Schema.decodeSync(successCodec)(sampleResult);
+    expect(decodedResult).toEqual(sampleResult);
+    expect(Schema.encodeSync(successCodec)(decodedResult)).toEqual(sampleResult);
+
+    for (const kind of ["plan", "walkthrough", "other"] as const) {
+      expect(decodeNativeArtifactKind(kind)).toBe(kind);
+    }
+
+    const exitCodec = Schema.toCodecJson(Rpc.exitSchema(rpc));
+    const err = new OrchestrationV2GetNativeArtifactsError({
+      threadId: ThreadId.make("thread-2"),
+    });
+    expect(err._tag).toBe("OrchestrationV2GetNativeArtifactsError");
+    const decodedExit = Schema.decodeSync(exitCodec)(Schema.encodeSync(exitCodec)(Exit.fail(err)));
+    expect(Exit.isFailure(decodedExit)).toBe(true);
   });
 });

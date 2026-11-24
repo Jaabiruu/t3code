@@ -875,6 +875,27 @@ export const AntigravityAuthMethod = Schema.Literals(
 );
 export type AntigravityAuthMethod = typeof AntigravityAuthMethod.Type;
 
+export const ANTIGRAVITY_OAUTH_FLOW_MODES = [
+  { value: "auto", label: "Automatic (Browser on Desktop)" },
+  { value: "browser-loopback", label: "Local browser OAuth" },
+  { value: "code", label: "One-time code (Remote / SSH)" },
+] as const satisfies ReadonlyArray<ProviderSettingsFormOption>;
+export const AntigravityOAuthFlowMode = Schema.Literals(
+  ANTIGRAVITY_OAUTH_FLOW_MODES.map((mode) => mode.value),
+);
+export type AntigravityOAuthFlowMode = typeof AntigravityOAuthFlowMode.Type;
+
+export const ANTIGRAVITY_ORCHESTRATOR_EFFORTS = [
+  "",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export const AntigravityOrchestratorEffort = Schema.Literals(ANTIGRAVITY_ORCHESTRATOR_EFFORTS);
+export type AntigravityOrchestratorEffort = typeof AntigravityOrchestratorEffort.Type;
+
 export const AntigravitySettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
@@ -890,6 +911,19 @@ export const AntigravitySettings = makeProviderSettingsSchema(
         providerSettingsForm: {
           control: "select",
           options: ANTIGRAVITY_AUTH_METHODS,
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    oauthFlowMode: AntigravityOAuthFlowMode.pipe(
+      Schema.withDecodingDefault(Effect.succeed("auto" as const)),
+      Schema.annotateKey({
+        title: "OAuth sign-in flow",
+        description:
+          "How Google OAuth completes sign-in: automatic picks browser locally or one-time code over remote sessions.",
+        providerSettingsForm: {
+          control: "select",
+          options: ANTIGRAVITY_OAUTH_FLOW_MODES,
           clearWhenEmpty: "omit",
         },
       }),
@@ -936,8 +970,24 @@ export const AntigravitySettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
+    defaultOrchestratorModel: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    defaultOrchestratorEffort: AntigravityOrchestratorEffort.pipe(
+      Schema.withDecodingDefault(Effect.succeed("" as const)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    defaultExecutorModel: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    defaultExecutorEffort: AntigravityOrchestratorEffort.pipe(
+      Schema.withDecodingDefault(Effect.succeed("" as const)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
   },
-  { order: ["authMethod", "apiKey", "gcpProject", "gcpLocation", "binaryPath"] },
+  { order: ["authMethod", "oauthFlowMode", "apiKey", "gcpProject", "gcpLocation", "binaryPath"] },
 );
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 

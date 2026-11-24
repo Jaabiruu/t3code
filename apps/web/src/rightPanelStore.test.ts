@@ -1393,4 +1393,109 @@ describe("rightPanelStore", () => {
     expect(surfaceIds()).toEqual(["browser:tab-a", "terminal:term-1", "diff", "browser:tab-b"]);
     expect(store.getUserActionRevision(refA)).toBe(revision);
   });
+
+  it("opens, toggles, proactively opens, and migrates swarm and artifacts surfaces", async () => {
+    const store = useRightPanelStore.getState();
+
+    store.open(refA, "swarm");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      id: "swarm",
+      kind: "swarm",
+    });
+
+    store.open(refA, "artifacts");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      id: "artifacts",
+      kind: "artifacts",
+    });
+
+    // Reopening swarm does not duplicate the singleton surface.
+    store.open(refA, "swarm");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces,
+    ).toEqual([
+      { id: "swarm", kind: "swarm" },
+      { id: "artifacts", kind: "artifacts" },
+    ]);
+
+    // Toggle closes when the active surface matches, then reopens on the next toggle.
+    store.toggle(refA, "swarm");
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBeNull();
+    store.toggle(refA, "swarm");
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("swarm");
+
+    // Proactive opening respects userActionRevision and updates artifacts selection when requested.
+    const staleRevision = store.getUserActionRevision(refB);
+    store.open(refB, "diff");
+    expect(store.openProactive(refB, { id: "swarm", kind: "swarm" }, staleRevision)).toBe(false);
+
+    const currentRevision = store.getUserActionRevision(refB);
+    expect(
+      store.openProactive(
+        refB,
+        { id: "artifacts", kind: "artifacts", selectedArtifactId: "art-1" },
+        currentRevision,
+      ),
+    ).toBe(true);
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refB)).toEqual({
+      id: "artifacts",
+      kind: "artifacts",
+      selectedArtifactId: "art-1",
+    });
+    expect(
+      store.openProactive(
+        refB,
+        { id: "artifacts", kind: "artifacts", selectedArtifactId: "art-2" },
+        currentRevision,
+        true,
+      ),
+    ).toBe(true);
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refB)).toEqual({
+      id: "artifacts",
+      kind: "artifacts",
+      selectedArtifactId: "art-2",
+    });
+
+    // Migration preserves existing surfaces alongside swarm and artifacts and strips invalid fields.
+    const migrated = migratePersistedRightPanelState({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "artifacts",
+          surfaces: [
+            { id: "diff", kind: "diff" },
+            { id: "swarm", kind: "swarm" },
+            { id: "artifacts", kind: "artifacts", selectedArtifactId: "art-9" },
+          ],
+        },
+        "env-1:thread-B": {
+          isOpen: true,
+          activeSurfaceId: "artifacts",
+          surfaces: [{ id: "artifacts", kind: "artifacts", selectedArtifactId: 123 }],
+        },
+      },
+    });
+    expect(selectThreadRightPanelState(migrated.byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "artifacts",
+      surfaces: [
+        { id: "diff", kind: "diff" },
+        { id: "swarm", kind: "swarm" },
+        { id: "artifacts", kind: "artifacts", selectedArtifactId: "art-9" },
+      ],
+    });
+    expect(selectThreadRightPanelState(migrated.byThreadKey, refB)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "artifacts",
+      surfaces: [{ id: "artifacts", kind: "artifacts" }],
+    });
+
+    await reloadRightPanelStore();
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces,
+    ).toEqual([
+      { id: "swarm", kind: "swarm" },
+      { id: "artifacts", kind: "artifacts" },
+    ]);
+  });
 });

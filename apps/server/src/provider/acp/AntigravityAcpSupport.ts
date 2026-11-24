@@ -83,6 +83,11 @@ export const antigravitySteersWithPrompt = (
   return parsed !== undefined && compareVersions(parsed, PROMPT_STEERING_RELEASE) >= 0;
 };
 
+export const isAntigravitySwarmSupportedVersion = (version: string | null | undefined): boolean => {
+  const parsed = parseAntigravityVersion(version);
+  return parsed !== undefined && compareVersions(parsed, PROMPT_STEERING_RELEASE) >= 0;
+};
+
 export const antigravityAppendsSystemPrompt = (
   initializeResult: EffectAcpSchema.InitializeResponse,
 ) => {
@@ -325,6 +330,156 @@ export const applyAntigravityAcpModelSelection = Effect.fn("applyAntigravityAcpM
     return resolved;
   },
 );
+
+function normalizeOptionKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_");
+}
+
+type SelectSessionConfigOption = Extract<
+  EffectAcpSchema.SessionConfigOption,
+  { readonly type: "select" }
+>;
+
+function findMatchingSelectOption(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+  candidateIds: ReadonlyArray<string>,
+): SelectSessionConfigOption | undefined {
+  const normalizedCandidates = new Set(candidateIds.map(normalizeOptionKey));
+  return configOptions.find(
+    (option): option is SelectSessionConfigOption =>
+      option.type === "select" &&
+      (normalizedCandidates.has(normalizeOptionKey(option.id)) ||
+        normalizedCandidates.has(normalizeOptionKey(option.name))),
+  );
+}
+
+function resolveAdvertisedChoice(
+  option: Extract<EffectAcpSchema.SessionConfigOption, { readonly type: "select" }>,
+  requested: string | undefined,
+): string | undefined {
+  const trimmed = requested?.trim();
+  if (!trimmed) return undefined;
+  const choices = option.options.flatMap((entry) => ("value" in entry ? [entry] : entry.options));
+  const exact = choices.find((choice) => choice.value === trimmed);
+  if (exact) return exact.value;
+  const lowered = trimmed.toLowerCase();
+  return choices.find(
+    (choice) => choice.value.toLowerCase() === lowered || choice.name.toLowerCase() === lowered,
+  )?.value;
+}
+
+const PLANNER_MODEL_OPTION_IDS = [
+  "planner_model",
+  "orchestrator_model",
+  "default_orchestrator_model",
+  "default_planner_model",
+  "plannermodel",
+  "orchestratormodel",
+] as const;
+
+const PLANNER_EFFORT_OPTION_IDS = [
+  "planner_effort",
+  "orchestrator_effort",
+  "planner_thinking_level",
+  "orchestrator_thinking_level",
+  "planner_thought_level",
+  "orchestrator_thought_level",
+] as const;
+
+const EXECUTOR_MODEL_OPTION_IDS = [
+  "executor_model",
+  "default_executor_model",
+  "worker_model",
+  "executormodel",
+] as const;
+
+const EXECUTOR_EFFORT_OPTION_IDS = [
+  "executor_effort",
+  "executor_thinking_level",
+  "executor_thought_level",
+  "worker_effort",
+] as const;
+
+/**
+ * Applies configured orchestrator/executor defaults to matching advertised ACP `configOptions`
+ * without failing when the runtime does not expose or advertise those choices.
+ */
+export const applyAntigravityOrchestratorDefaults = Effect.fn(
+  "applyAntigravityOrchestratorDefaults",
+)(function* (input: {
+  readonly runtime: Pick<
+    AcpSessionRuntime.AcpSessionRuntime["Service"],
+    "getConfigOptions" | "setConfigOption"
+  >;
+  readonly orchestrator?:
+    | {
+        readonly plannerModel?: string | undefined;
+        readonly plannerEffort?: string | undefined;
+        readonly executorModel?: string | undefined;
+        readonly executorEffort?: string | undefined;
+      }
+    | undefined;
+  readonly selectedModel?: string | undefined;
+  readonly explicitOptionIds?: ReadonlySet<string> | undefined;
+}) {
+  const orchestrator = input.orchestrator;
+  if (!orchestrator) return;
+  const hasAnyDefault =
+    Boolean(orchestrator.plannerModel?.trim()) ||
+    Boolean(orchestrator.plannerEffort?.trim()) ||
+    Boolean(orchestrator.executorModel?.trim()) ||
+    Boolean(orchestrator.executorEffort?.trim());
+  if (!hasAnyDefault) return;
+
+  const configOptions = yield* input.runtime.getConfigOptions.pipe(Effect.orElseSucceed(() => []));
+  const mappings: Array<{
+    readonly option:
+      | Extract<EffectAcpSchema.SessionConfigOption, { readonly type: "select" }>
+      | undefined;
+    readonly requested: string | undefined;
+  }> = [
+    {
+      option: findMatchingSelectOption(configOptions, PLANNER_MODEL_OPTION_IDS),
+      requested: orchestrator.plannerModel,
+    },
+    {
+      option: findMatchingSelectOption(configOptions, PLANNER_EFFORT_OPTION_IDS),
+      requested: orchestrator.plannerEffort,
+    },
+    {
+      option: findMatchingSelectOption(configOptions, EXECUTOR_MODEL_OPTION_IDS),
+      requested: orchestrator.executorModel,
+    },
+    {
+      option: findMatchingSelectOption(configOptions, EXECUTOR_EFFORT_OPTION_IDS),
+      requested: orchestrator.executorEffort,
+    },
+  ];
+
+  // When running directly on an orchestrator model with no dedicated planner_effort option,
+  // map defaultOrchestratorEffort onto thought_level unless the turn overrode it explicitly.
+  if (
+    mappings[1]?.option === undefined &&
+    orchestrator.plannerEffort?.trim() &&
+    input.selectedModel &&
+    /orchestrator/i.test(input.selectedModel)
+  ) {
+    mappings.push({
+      option: antigravityThinkingConfig(configOptions),
+      requested: orchestrator.plannerEffort,
+    });
+  }
+
+  for (const { option, requested } of mappings) {
+    if (!option || input.explicitOptionIds?.has(option.id)) continue;
+    const resolved = resolveAdvertisedChoice(option, requested);
+    if (!resolved || resolved === option.currentValue) continue;
+    yield* input.runtime.setConfigOption(option.id, resolved).pipe(Effect.catch(() => Effect.void));
+  }
+});
 
 const IMAGE_MIME_TYPES = new Set(["image/bmp", "image/jpeg", "image/png", "image/webp"]);
 const AUDIO_MIME_TYPES = new Set([

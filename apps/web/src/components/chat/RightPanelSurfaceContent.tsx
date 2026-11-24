@@ -14,6 +14,8 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { lazy, Suspense } from "react";
 import { LinkedThreadPane } from "./LinkedThreadPane";
 import SideThreadPane from "./SideThreadPane";
+import { ArtifactsPanel } from "./artifacts/ArtifactsPanel";
+import { SwarmPanel } from "./swarm/SwarmPanel";
 import type { ComposerImageAttachment, DraftId } from "../../composerDraftStore";
 import type { ShortcutMatchContext } from "../../keybindings";
 import type { SideChatParentPanel } from "../../lib/sideChatPane";
@@ -63,12 +65,20 @@ interface RightPanelFileProps {
   readonly onPendingChange: (relativePath: string, pending: boolean) => void;
 }
 
+interface RightPanelArtifactsActions {
+  readonly onSendFeedback: (text: string) => void;
+  readonly onInsertDraft: (text: string) => void;
+}
+
 export function RightPanelSurfaceContent(props: {
   readonly surface: RightPanelSurface | null;
   readonly activeSurfaceId: string | null;
   readonly threadRef: ScopedThreadRef;
   readonly environmentId: EnvironmentId;
   readonly visible: boolean;
+  readonly threadIsActive: boolean;
+  readonly cwd: string | undefined;
+  readonly artifactsActions: RightPanelArtifactsActions;
   readonly composerDraftTarget: ScopedThreadRef | DraftId;
   readonly keybindings: ResolvedKeybindingsConfig;
   readonly configuredPreviewUrls: ReadonlyArray<string>;
@@ -306,5 +316,29 @@ export function RightPanelSurfaceContent(props: {
         </Suspense>
       );
     }
+    case "swarm":
+      return (
+        <SwarmPanel
+          key={scopedThreadKey(threadRef)}
+          environmentId={props.environmentId}
+          threadId={threadRef.threadId}
+          visible={visible && props.activeSurfaceId === surface.id}
+          threadIsActive={props.threadIsActive}
+        />
+      );
+    case "artifacts":
+      return (
+        <ArtifactsPanel
+          key={scopedThreadKey(threadRef)}
+          environmentId={props.environmentId}
+          threadId={threadRef.threadId}
+          threadRef={threadRef}
+          cwd={props.cwd}
+          visible={visible && props.activeSurfaceId === surface.id}
+          threadIsActive={props.threadIsActive}
+          onSendFeedback={props.artifactsActions.onSendFeedback}
+          onInsertDraft={props.artifactsActions.onInsertDraft}
+        />
+      );
   }
 }

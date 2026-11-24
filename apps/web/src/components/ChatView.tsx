@@ -1431,6 +1431,27 @@ export default function ChatView(props: ChatViewProps) {
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
+  const attachedProviderSession =
+    activeProviderThread?.providerSessionId != null
+      ? serverProjection?.providerSessions.find(
+          (session) => session.id === activeProviderThread.providerSessionId,
+        )
+      : undefined;
+  const activeProviderSession =
+    attachedProviderSession ??
+    serverProjection?.providerSessions.findLast(
+      (session) => session.status !== "stopped" && session.status !== "error",
+    ) ??
+    serverProjection?.providerSessions.at(-1);
+  const sessionCapabilities = activeProviderSession?.capabilities;
+  const swarmOffered =
+    sessionCapabilities !== undefined
+      ? sessionCapabilities.subagents.supportsNativeSwarm === true
+      : selectedProviderEntry?.driverKind === "antigravity";
+  const artifactsOffered =
+    sessionCapabilities !== undefined
+      ? sessionCapabilities.planning.supportsNativeArtifacts === true
+      : selectedProviderEntry?.driverKind === "antigravity";
   const activeUsageModel =
     [
       composerModelSelectionApplies ? composerSelectedModelSelection : null,
@@ -3024,6 +3045,14 @@ export default function ChatView(props: ChatViewProps) {
                 ? gt("Available once the thread's worktree is set up.")
                 : null;
   const openSideChatStable = useStableCallback(() => void sideChat.open());
+  const addSwarmSurfaceStable = useStableCallback(() => {
+    if (!activeThreadRef || !swarmOffered) return;
+    useRightPanelStore.getState().open(activeThreadRef, "swarm");
+  });
+  const addArtifactsSurfaceStable = useStableCallback(() => {
+    if (!activeThreadRef || !artifactsOffered) return;
+    useRightPanelStore.getState().open(activeThreadRef, "artifacts");
+  });
   const openSurfaceInMainView = useOpenSurfaceInMainView(activeThreadRef);
   const sendSideChatStable = useStableCallback(sideChat.open);
   const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
@@ -3193,6 +3222,48 @@ export default function ChatView(props: ChatViewProps) {
     void onSend(undefined, "auto", "foreground", { annotation, image });
   };
   const sendPreviewAnnotationStable = useStableCallback(sendPreviewAnnotation);
+  const sendArtifactFeedback = (text: string) => {
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || !canOperateThread || !activeThread) return;
+    if (!isServerThread) {
+      const sendContext = composerRef.current?.getSendContext();
+      if (!sendContext) return;
+      void onSend(undefined, "auto", "foreground", undefined, {
+        prompt: trimmed,
+        sendContext: {
+          ...sendContext,
+          prompt: trimmed,
+          images: [],
+          files: [],
+          terminalContexts: [],
+          previewAnnotations: [],
+          reviewComments: [],
+          threadContexts: [],
+          environmentContexts: [],
+        },
+      });
+      return;
+    }
+    void sendStandaloneCommand(trimmed, gt("Failed to send artifact feedback."));
+  };
+  const sendArtifactFeedbackStable = useStableCallback(sendArtifactFeedback);
+  const insertArtifactDraft = (text: string) => {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return;
+    const composer = composerRef.current;
+    if (!composer) return;
+
+    if (!composer.insertTextAtEnd(trimmed, { ensureLeadingBoundary: true })) {
+      toastManager.add({
+        type: "error",
+        title: gt("Unable to add to chat"),
+        description: gt("The composer is busy; try again once it is ready."),
+      });
+      return;
+    }
+    scheduleComposerFocusStable();
+  };
+  const insertArtifactDraftStable = useStableCallback(insertArtifactDraft);
   const onComposerResumeStable = useStableCallback(onResume);
   const onComposerCompactContextStable = useStableCallback(onCompactContext);
   // Read from the projection the footer renders, so the scroll below sees the new message.
@@ -3419,6 +3490,12 @@ export default function ChatView(props: ChatViewProps) {
       threadRef={activeThreadRef}
       environmentId={activeThread.environmentId}
       visible={rightPanelOpen}
+      threadIsActive={isWorking || threadRuntimeIsActive(activeRuntime)}
+      cwd={activeWorkspaceRoot}
+      artifactsActions={{
+        onSendFeedback: sendArtifactFeedbackStable,
+        onInsertDraft: insertArtifactDraftStable,
+      }}
       composerDraftTarget={composerDraftTarget}
       keybindings={keybindings}
       configuredPreviewUrls={configuredPreviewUrls}
@@ -4240,6 +4317,8 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequests={addPullRequestsSurfaceStable}
           onAddDevice={addDeviceSurfaceStable}
           onAddSideChat={sideChatsOffered ? openSideChatStable : undefined}
+          onAddSwarm={swarmOffered ? addSwarmSurfaceStable : undefined}
+          onAddArtifacts={artifactsOffered ? addArtifactsSurfaceStable : undefined}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && diffAvailable}
@@ -4249,6 +4328,8 @@ export default function ChatView(props: ChatViewProps) {
           deviceAvailable={activeThreadRef !== null}
           sideChatAvailable={sideChat.available}
           sideChatDisabledReason={sideChatDisabledReason}
+          swarmAvailable={swarmOffered}
+          artifactsAvailable={artifactsOffered}
         >
           {rightPanelContent}
         </ChatRightPanel>

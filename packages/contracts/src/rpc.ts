@@ -277,7 +277,9 @@ import {
 import {
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationGetWorkflowScriptError,
+  OrchestrationV2GetNativeArtifactsError,
   OrchestrationV2GetNativeChildWorkError,
+  OrchestrationV2GetNativeSwarmStateError,
   OrchestrationV2StopWorkflowError,
   OrchestrationV2ForceStopThreadError,
   OrchestrationV2DispatchCommandError,
@@ -2228,6 +2230,24 @@ const WsOrchestrationV2GetNativeChildWorkRpc = Rpc.make(
   },
 );
 
+const WsOrchestrationV2GetNativeSwarmStateRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getNativeSwarmState,
+  {
+    payload: OrchestrationV2RpcSchemas.getNativeSwarmState.input,
+    success: OrchestrationV2RpcSchemas.getNativeSwarmState.output,
+    error: Schema.Union([OrchestrationV2GetNativeSwarmStateError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2GetNativeArtifactsRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getNativeArtifacts,
+  {
+    payload: OrchestrationV2RpcSchemas.getNativeArtifacts.input,
+    success: OrchestrationV2RpcSchemas.getNativeArtifacts.output,
+    error: Schema.Union([OrchestrationV2GetNativeArtifactsError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationV2GetTurnItemRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getTurnItem, {
   payload: OrchestrationV2RpcSchemas.getTurnItem.input,
   success: OrchestrationV2RpcSchemas.getTurnItem.output,
@@ -2696,6 +2716,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2GetNativeChildWorkRpc,
+  WsOrchestrationV2GetNativeSwarmStateRpc,
+  WsOrchestrationV2GetNativeArtifactsRpc,
   WsOrchestrationV2StopWorkflowRpc,
   WsOrchestrationV2ForceStopThreadRpc,
   WsOrchestrationV2GetTurnItemRpc,

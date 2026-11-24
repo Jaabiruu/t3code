@@ -1,7 +1,11 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Effect's symlink has no type argument, and Windows needs a junction to link without elevation.
 import * as NodeFSP from "node:fs/promises";
 
-import type { AntigravityAuthMethod, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  AntigravityAuthMethod,
+  AntigravityOAuthFlowMode,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveNodeExecutable, nodeRuntimeUnavailableMessage } from "@t3tools/shared/nodeRuntime";
 import * as Digest from "effect/crypto/Digest";
@@ -39,16 +43,11 @@ const maxStdoutLineBytes = 16 * 1024 * 1024;
 const authPrefixBytes = new TextEncoder().encode(ANTIGRAVITY_AUTH_STDOUT_PREFIX);
 const decodeUrl = Schema.decodeUnknownEffect(Schema.URLFromString);
 const decodeBrowserHelperUrl = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.String));
-const ProfileSettingsFile = Schema.Struct({
-  auth: Schema.Struct({ type: Schema.String }),
-  gcp: Schema.optional(
-    Schema.Struct({
-      project: Schema.optional(Schema.String),
-      location: Schema.optional(Schema.String),
-    }),
-  ),
-});
+const ProfileSettingsFile = Schema.Record(Schema.String, Schema.Unknown);
 const encodeProfileSettings = Schema.encodeSync(Schema.fromJsonString(ProfileSettingsFile));
+const decodeProfileSettings = Schema.decodeUnknownOption(
+  Schema.fromJsonString(ProfileSettingsFile),
+);
 const isAcpRequestError = Schema.is(AcpErrors.AcpRequestError);
 const isAcpTransportError = Schema.is(AcpErrors.AcpTransportError);
 
@@ -81,6 +80,13 @@ const removedEnvironmentKeys = new Set([
   "CHROME_CRASHPAD_PIPE_NAME",
 ]);
 
+export interface AntigravityOrchestratorConfig {
+  readonly plannerModel?: string | undefined;
+  readonly plannerEffort?: string | undefined;
+  readonly executorModel?: string | undefined;
+  readonly executorEffort?: string | undefined;
+}
+
 export interface AntigravityProfile {
   readonly platform: NodeJS.Platform;
   readonly geminiHome: string;
@@ -89,6 +95,7 @@ export interface AntigravityProfile {
   readonly tempDirectory: string;
   readonly browserCommand: string;
   readonly caBundlePath?: string;
+  readonly orchestrator?: AntigravityOrchestratorConfig;
 }
 
 export interface AntigravityAuthConfig {
@@ -104,6 +111,38 @@ const ANTIGRAVITY_PERSONAL_AUTH: AntigravityAuthConfig = {
   gcpProject: "",
   gcpLocation: "",
 };
+
+export function resolveAntigravityOAuthFlowMode(
+  mode: AntigravityOAuthFlowMode | undefined,
+  baseEnv: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): "browser-loopback" | "code" {
+  if (mode === "code") return "code";
+  if (mode === "browser-loopback") return "browser-loopback";
+  const hasSsh = Boolean(baseEnv.SSH_CLIENT || baseEnv.SSH_TTY || baseEnv.SSH_CONNECTION);
+  const hasDisplay =
+    platform === "win32" ||
+    platform === "darwin" ||
+    Boolean(baseEnv.DISPLAY || baseEnv.WAYLAND_DISPLAY);
+  return !hasSsh && hasDisplay ? "browser-loopback" : "code";
+}
+
+function sanitizeOrchestratorConfig(
+  orchestrator: AntigravityOrchestratorConfig | undefined,
+): AntigravityOrchestratorConfig | undefined {
+  if (!orchestrator) return undefined;
+  const plannerModel = orchestrator.plannerModel?.trim() || undefined;
+  const plannerEffort = orchestrator.plannerEffort?.trim() || undefined;
+  const executorModel = orchestrator.executorModel?.trim() || undefined;
+  const executorEffort = orchestrator.executorEffort?.trim() || undefined;
+  const cleaned: AntigravityOrchestratorConfig = {
+    ...(plannerModel ? { plannerModel } : {}),
+    ...(plannerEffort ? { plannerEffort } : {}),
+    ...(executorModel ? { executorModel } : {}),
+    ...(executorEffort ? { executorEffort } : {}),
+  };
+  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
 
 export function antigravityAuthUsesBrowser(authMethod: AntigravityAuthMethod): boolean {
   return authMethod === "oauth-personal" || authMethod === "oauth-business";
@@ -139,18 +178,46 @@ export function antigravityAuthConfigIssue(auth: AntigravityAuthConfig): string 
   }
 }
 
+export function antigravityOrchestratorConfigFromSettings(settings: {
+  readonly defaultOrchestratorModel?: string;
+  readonly defaultOrchestratorEffort?: string;
+  readonly defaultExecutorModel?: string;
+  readonly defaultExecutorEffort?: string;
+}): AntigravityOrchestratorConfig | undefined {
+  return sanitizeOrchestratorConfig({
+    plannerModel: settings.defaultOrchestratorModel,
+    plannerEffort: settings.defaultOrchestratorEffort,
+    executorModel: settings.defaultExecutorModel,
+    executorEffort: settings.defaultExecutorEffort,
+  });
+}
+
 /**
  * `auth.type` names the selected method so a native logout clears only that method's credentials
  * instead of every stored token. Never holds a credential.
  */
-function antigravityProfileSettings(auth: AntigravityAuthConfig): string {
+export function antigravityProfileSettings(
+  auth: AntigravityAuthConfig,
+  orchestrator?: AntigravityOrchestratorConfig,
+  existingSettingsJson?: string,
+): string {
+  const existing = existingSettingsJson
+    ? Option.getOrElse(
+        decodeProfileSettings(existingSettingsJson),
+        (): Record<string, unknown> => ({}),
+      )
+    : {};
+  const { auth: _auth, gcp: _gcp, orchestrator: _orchestrator, ...preserved } = existing;
   const gcp = {
     ...(auth.gcpProject ? { project: auth.gcpProject } : {}),
     ...(auth.gcpLocation ? { location: auth.gcpLocation } : {}),
   };
+  const sanitizedOrchestrator = sanitizeOrchestratorConfig(orchestrator);
   return `${encodeProfileSettings({
+    ...preserved,
     auth: { type: auth.authMethod },
     ...(Object.keys(gcp).length > 0 ? { gcp } : {}),
+    ...(sanitizedOrchestrator !== undefined ? { orchestrator: sanitizedOrchestrator } : {}),
   })}\n`;
 }
 
@@ -204,6 +271,7 @@ function antigravityEnvironment(
   baseEnv: NodeJS.ProcessEnv,
   auth: AntigravityAuthConfig,
   runtimeTempDirectory?: string,
+  oauthFlowMode?: AntigravityOAuthFlowMode,
 ) {
   const environment: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(baseEnv)) {
@@ -217,6 +285,11 @@ function antigravityEnvironment(
       : auth.authMethod === "agent-platform" && auth.apiKey
         ? { GOOGLE_API_KEY: auth.apiKey }
         : {};
+  const resolvedOAuthFlow = resolveAntigravityOAuthFlowMode(
+    oauthFlowMode,
+    baseEnv,
+    profile.platform,
+  );
   // Each launch unpacks about 1 GB; use T3-owned temp so the driver can reclaim files after force-kill.
   const tempDirectory = runtimeTempDirectory ?? profile.tempDirectory;
   return {
@@ -229,7 +302,7 @@ function antigravityEnvironment(
       : {}),
     // The 1.5 CLI ignores AGY_ACP_FORCE_FILE_STORAGE and keeps Google sign-ins in one OS keyring
     // entry for every profile, unless it believes it runs over SSH. Sign-in then uses `--login`.
-    ...(auth.authMethod === "oauth-personal"
+    ...(auth.authMethod === "oauth-personal" && resolvedOAuthFlow === "code"
       ? { SSH_CONNECTION: baseEnv.SSH_CONNECTION || "127.0.0.1 0 127.0.0.1 0" }
       : {}),
     GEMINI_HOME: profile.geminiHome,
@@ -396,6 +469,8 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
   readonly runtimeExecutablePath?: string;
   readonly platform?: NodeJS.Platform;
   readonly auth?: AntigravityAuthConfig;
+  readonly orchestrator?: AntigravityOrchestratorConfig;
+  readonly oauthFlowMode?: AntigravityOAuthFlowMode;
   readonly userHome?: string;
   readonly tempDirectory?: string;
 }) {
@@ -462,6 +537,7 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
       }
     }
   }
+  const orchestrator = sanitizeOrchestratorConfig(input.orchestrator);
   const profile: AntigravityProfile = {
     platform,
     geminiHome,
@@ -470,8 +546,15 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
     tempDirectory,
     browserCommand,
     ...(caBundlePath === undefined ? {} : { caBundlePath }),
+    ...(orchestrator === undefined ? {} : { orchestrator }),
   };
-  const environment = antigravityEnvironment(profile, input.baseEnv ?? process.env, auth);
+  const environment = antigravityEnvironment(
+    profile,
+    input.baseEnv ?? process.env,
+    auth,
+    undefined,
+    input.oauthFlowMode,
+  );
   yield* Effect.gen(function* () {
     const child = yield* spawner.spawn(
       ChildProcess.make(helperExecutable, ["-e", browserHelperSource, "--", browserPreflightUrl], {
@@ -529,8 +612,15 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
         );
     }
   }
+  const settingsPath = path.join(acpDirectory, "settings.json");
+  const existingSettingsJson = yield* fs
+    .readFileString(settingsPath)
+    .pipe(Effect.orElseSucceed(() => undefined));
   yield* fs
-    .writeFileString(path.join(acpDirectory, "settings.json"), antigravityProfileSettings(auth))
+    .writeFileString(
+      settingsPath,
+      antigravityProfileSettings(auth, orchestrator, existingSettingsJson),
+    )
     .pipe(
       Effect.mapError(() =>
         authSupportError("The Antigravity profile settings could not be written."),
@@ -550,6 +640,7 @@ export function buildAntigravityAcpSpawnInput(input: {
   readonly baseEnv?: NodeJS.ProcessEnv;
   readonly auth?: AntigravityAuthConfig;
   readonly runtimeTempDirectory?: string;
+  readonly oauthFlowMode?: AntigravityOAuthFlowMode;
 }): AcpSessionRuntime.AcpSpawnInput {
   return {
     command: input.installation.executablePath,
@@ -567,6 +658,7 @@ export function buildAntigravityAcpSpawnInput(input: {
       input.baseEnv ?? process.env,
       input.auth ?? ANTIGRAVITY_PERSONAL_AUTH,
       input.runtimeTempDirectory,
+      input.oauthFlowMode,
     ),
     extendEnv: false,
   };

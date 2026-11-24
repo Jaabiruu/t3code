@@ -4,6 +4,8 @@ import type * as EffectAcpSchema from "effect-acp/compat";
 import * as AcpWireSchema from "effect-acp/schema-v1";
 
 import {
+  extractAntigravityArtifactWrite,
+  extractAntigravitySwarmAction,
   extractAntigravityUserInputQuestion,
   antigravityApprovalOptions,
   antigravitySubagentOutput,
@@ -765,5 +767,118 @@ describe("Antigravity served reads", () => {
       }).toolCall,
     );
     expect(foreignCall.data.rawInput).toEqual({ message: "Hello", toolSummary: "Send greeting" });
+  });
+});
+
+describe("extractAntigravityArtifactWrite and extractAntigravitySwarmAction", () => {
+  it("extracts brain markdown writes and ignores regular workspace files or internal directories", () => {
+    const planWrite = extractAntigravityArtifactWrite({
+      toolCallId: "call_plan",
+      kind: "edit",
+      title: "write_file",
+      data: {
+        rawInput: {
+          Path: "/profile/antigravity-acp/brain/session-1/implementation_plan.md",
+          Content: "# Proposed Plan\n\n- Step 1",
+          ArtifactMetadata: {
+            Summary: "Backend design",
+            UserFacing: true,
+            RequestFeedback: true,
+          },
+        },
+      },
+    });
+    expect(planWrite).toEqual({
+      toolCallId: "call_plan",
+      toolName: "write_file",
+      path: "/profile/antigravity-acp/brain/session-1/implementation_plan.md",
+      fileName: "implementation_plan.md",
+      content: "# Proposed Plan\n\n- Step 1",
+      summary: "Backend design",
+      userFacing: true,
+      requestFeedback: true,
+      isPlanPath: true,
+      isArtifact: true,
+    });
+
+    const editWrite = extractAntigravityArtifactWrite({
+      toolName: "edit_file",
+      input: {
+        Path: "C:\\profile\\antigravity-acp\\brain\\session-1\\walkthrough.md",
+        Replacement: "# Walkthrough\nDone",
+        ArtifactMetadata: { Summary: "Walkthrough", UserFacing: true, RequestFeedback: false },
+      },
+    });
+    expect(editWrite).toMatchObject({
+      toolName: "edit_file",
+      fileName: "walkthrough.md",
+      content: "# Walkthrough\nDone",
+      userFacing: true,
+      requestFeedback: false,
+      isPlanPath: false,
+      isArtifact: true,
+    });
+
+    expect(
+      extractAntigravityArtifactWrite({
+        toolName: "write_file",
+        input: { Path: "/repo/src/index.ts", Content: "export {};" },
+      }),
+    ).toBeUndefined();
+    expect(
+      extractAntigravityArtifactWrite({
+        toolName: "write_file",
+        input: {
+          Path: "/profile/antigravity-acp/brain/session-1/.system_generated/notes.md",
+          Content: "internal",
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("extracts swarm and post_message actions from tool calls and turn items", () => {
+    expect(
+      extractAntigravitySwarmAction({
+        toolCallId: "swarm-1",
+        title: "Running swarm",
+        data: {
+          rawInput: {
+            action: "add",
+            name: "parser",
+            brief: "Parse protocol messages",
+            model: "gemini-3",
+            tasks: ["part a", "part b"],
+          },
+        },
+      }),
+    ).toEqual({
+      kind: "swarm",
+      toolCallId: "swarm-1",
+      action: "add",
+      name: "parser",
+      brief: "Parse protocol messages",
+      model: "gemini-3",
+      tasks: ["part a", "part b"],
+    });
+
+    expect(
+      extractAntigravitySwarmAction({
+        toolName: "post_message",
+        input: { text: "@coordinator [done] Verified." },
+        output: { seq: 4 },
+      }),
+    ).toEqual({
+      kind: "post_message",
+      text: "@coordinator [done] Verified.",
+      seq: 4,
+      rawOutput: { seq: 4 },
+    });
+
+    expect(
+      extractAntigravitySwarmAction({
+        toolName: "send_message",
+        input: { text: "Direct subagent message" },
+      }),
+    ).toBeUndefined();
   });
 });

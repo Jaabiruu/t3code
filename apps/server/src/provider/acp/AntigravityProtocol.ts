@@ -627,3 +627,386 @@ export function antigravitySubagentOutput(toolCall: AcpToolCallState): string | 
   const output = toolCall.data.rawOutput;
   return typeof output === "string" && output.trim() ? boundText(output.trim()) : undefined;
 }
+
+export interface AntigravityArtifactWrite {
+  readonly toolCallId?: string;
+  readonly toolName: string;
+  readonly path: string | null;
+  readonly fileName: string | null;
+  readonly content: string | null;
+  readonly summary: string | null;
+  readonly userFacing: boolean | null;
+  readonly requestFeedback: boolean | null;
+  readonly isPlanPath: boolean;
+  readonly isArtifact: boolean;
+}
+
+export type AntigravitySwarmActionKind =
+  | "add"
+  | "title"
+  | "model"
+  | "kill"
+  | "status"
+  | "models"
+  | "unknown";
+
+export type AntigravitySwarmToolAction =
+  | {
+      readonly kind: "swarm";
+      readonly toolCallId?: string;
+      readonly action: AntigravitySwarmActionKind;
+      readonly name?: string;
+      readonly title?: string;
+      readonly brief?: string;
+      readonly model?: string;
+      readonly workspace?: string;
+      readonly fork?: string;
+      readonly n?: number;
+      readonly tasks?: ReadonlyArray<string>;
+      readonly rawOutput?: unknown;
+    }
+  | {
+      readonly kind: "post_message";
+      readonly toolCallId?: string;
+      readonly text: string;
+      readonly sender?: string;
+      readonly seq?: number;
+      readonly rawOutput?: unknown;
+    };
+
+const ARTIFACT_WRITE_TOOLS = new Set([
+  "write_file",
+  "write_to_file",
+  "edit_file",
+  "replace_file_content",
+  "multi_replace_file_content",
+  "file_change",
+  "create_file",
+]);
+
+const SWARM_ACTION_KINDS = new Set<AntigravitySwarmActionKind>([
+  "add",
+  "title",
+  "model",
+  "kill",
+  "status",
+  "models",
+]);
+
+const TOP_LEVEL_BRAIN_MD_PATTERN =
+  /(?:^|\/)(?:antigravity-acp\/)?brain\/([A-Za-z0-9-]{1,64})\/([^/]+\.md)$/i;
+
+function asObjectRecord(value: unknown): Record<string, unknown> | undefined {
+  return Predicate.isObject(value) ? value : undefined;
+}
+
+function unwrapToolCallFields(toolCall: unknown): {
+  readonly toolCallId?: string;
+  readonly toolName?: string;
+  readonly title?: string;
+  readonly kind?: string;
+  readonly locations?: ReadonlyArray<{ readonly path?: unknown }>;
+  readonly rawInput?: Record<string, unknown>;
+  readonly rawOutput?: unknown;
+  readonly fileName?: string;
+  readonly newStr?: string;
+} {
+  const root = asObjectRecord(toolCall);
+  if (!root) return {};
+  const data = asObjectRecord(root.data);
+  const rawInput =
+    asObjectRecord(root.rawInput) ??
+    asObjectRecord(data?.rawInput) ??
+    asObjectRecord(root.input) ??
+    asObjectRecord(data?.input);
+  const locationsRaw = root.locations ?? data?.locations;
+  const locations = Array.isArray(locationsRaw)
+    ? locationsRaw.flatMap((entry) => {
+        const obj = asObjectRecord(entry);
+        return obj ? [obj] : [];
+      })
+    : undefined;
+  return {
+    ...(typeof root.toolCallId === "string" ? { toolCallId: root.toolCallId } : {}),
+    ...(typeof root.toolName === "string"
+      ? { toolName: root.toolName }
+      : typeof root.name === "string"
+        ? { toolName: root.name }
+        : typeof root.type === "string" && root.type === "file_change"
+          ? { toolName: "file_change" }
+          : {}),
+    ...(typeof root.title === "string"
+      ? { title: root.title }
+      : typeof data?.title === "string"
+        ? { title: data.title }
+        : {}),
+    ...(typeof root.kind === "string"
+      ? { kind: root.kind }
+      : typeof data?.kind === "string"
+        ? { kind: data.kind }
+        : {}),
+    ...(locations !== undefined ? { locations } : {}),
+    ...(rawInput !== undefined ? { rawInput } : {}),
+    ...(root.rawOutput !== undefined
+      ? { rawOutput: root.rawOutput }
+      : data?.rawOutput !== undefined
+        ? { rawOutput: data.rawOutput }
+        : root.output !== undefined
+          ? { rawOutput: root.output }
+          : {}),
+    ...(typeof root.fileName === "string" ? { fileName: root.fileName } : {}),
+    ...(typeof root.newStr === "string" ? { newStr: root.newStr } : {}),
+  };
+}
+
+function normalizeBareToolName(value: string): string {
+  const trimmed = value.trim();
+  const resolved = resolveT3McpToolId(trimmed);
+  if (resolved) return resolved.toLowerCase();
+  const mcpParts = trimmed.split("__");
+  if (mcpParts.length >= 3 && mcpParts[0] === "mcp") {
+    return (mcpParts[mcpParts.length - 1] ?? trimmed).toLowerCase();
+  }
+  const slashParts = trimmed.split("/");
+  return (slashParts[slashParts.length - 1] ?? trimmed).toLowerCase();
+}
+
+function firstNonEmptyString(
+  record: Record<string, unknown> | undefined,
+  keys: ReadonlyArray<string>,
+): string | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value;
+  }
+  return undefined;
+}
+
+function firstStringRaw(
+  record: Record<string, unknown> | undefined,
+  keys: ReadonlyArray<string>,
+): string | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
+function firstBoolean(
+  record: Record<string, unknown> | undefined,
+  keys: ReadonlyArray<string>,
+): boolean | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") return value;
+  }
+  return undefined;
+}
+
+function extractReplacementChunksContent(
+  input: Record<string, unknown> | undefined,
+): string | null {
+  if (!input) return null;
+  const chunks = input.ReplacementChunks ?? input.replacementChunks ?? input.replacement_chunks;
+  if (!Array.isArray(chunks)) return null;
+  const parts = chunks.flatMap((entry) => {
+    const obj = asObjectRecord(entry);
+    const text = firstStringRaw(obj, ["ReplacementContent", "replacementContent", "Replacement"]);
+    return text !== undefined && text.length > 0 ? [text] : [];
+  });
+  return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+function resolveArtifactWriteToolName(
+  fields: ReturnType<typeof unwrapToolCallFields>,
+): string | undefined {
+  if (fields.toolName !== undefined) {
+    const bare = normalizeBareToolName(fields.toolName);
+    if (ARTIFACT_WRITE_TOOLS.has(bare)) return bare;
+  }
+  if (fields.title !== undefined) {
+    const match =
+      /\b(write_file|write_to_file|edit_file|replace_file_content|multi_replace_file_content)\b/i.exec(
+        fields.title,
+      );
+    if (match?.[1]) return match[1].toLowerCase();
+  }
+  if (fields.kind === "edit") return "edit";
+  if (
+    fields.rawInput &&
+    (asObjectRecord(fields.rawInput.ArtifactMetadata) !== undefined ||
+      asObjectRecord(fields.rawInput.artifactMetadata) !== undefined ||
+      asObjectRecord(fields.rawInput.artifact_metadata) !== undefined)
+  ) {
+    return fields.rawInput.Replacement !== undefined ? "edit_file" : "write_file";
+  }
+  return undefined;
+}
+
+export function extractAntigravityArtifactWrite(
+  toolCall: unknown,
+): AntigravityArtifactWrite | undefined {
+  const fields = unwrapToolCallFields(toolCall);
+  const toolName = resolveArtifactWriteToolName(fields);
+  if (toolName === undefined) return undefined;
+
+  const input = fields.rawInput;
+  const metadata =
+    asObjectRecord(input?.ArtifactMetadata) ??
+    asObjectRecord(input?.artifactMetadata) ??
+    asObjectRecord(input?.artifact_metadata);
+  const summary =
+    firstNonEmptyString(metadata, ["Summary", "summary"]) ??
+    firstNonEmptyString(input, ["Description", "description"]) ??
+    null;
+  const userFacing = firstBoolean(metadata, ["UserFacing", "userFacing", "user_facing"]) ?? null;
+  const requestFeedback =
+    firstBoolean(metadata, ["RequestFeedback", "requestFeedback", "request_feedback"]) ?? null;
+  const isArtifactFlag = firstBoolean(input, ["IsArtifact", "isArtifact", "is_artifact"]);
+  const hasMetadata =
+    metadata !== undefined ||
+    isArtifactFlag === true ||
+    userFacing !== null ||
+    requestFeedback !== null;
+
+  const rawPath =
+    firstNonEmptyString(input, [
+      "Path",
+      "path",
+      "TargetFile",
+      "targetFile",
+      "target_file",
+      "filePath",
+      "file_path",
+      "fileName",
+    ]) ??
+    fields.fileName ??
+    (typeof fields.locations?.[0]?.path === "string" && fields.locations[0].path.trim().length > 0
+      ? fields.locations[0].path
+      : undefined) ??
+    (fields.title ? /(?:\/|[A-Za-z]:\\)[^\s"'`]+\.md\b/i.exec(fields.title)?.[0] : undefined);
+
+  const normalizedPath = rawPath ? rawPath.replace(/\\/g, "/") : null;
+  const brainMatch = normalizedPath ? TOP_LEVEL_BRAIN_MD_PATTERN.exec(normalizedPath) : null;
+  const isTopLevelBrainMd = brainMatch !== null;
+  const fileName =
+    brainMatch?.[2] ??
+    (normalizedPath
+      ? (normalizedPath
+          .split("/")
+          .filter((segment) => segment.length > 0)
+          .at(-1) ?? null)
+      : null);
+
+  if (!hasMetadata && !isTopLevelBrainMd) {
+    return undefined;
+  }
+
+  const content =
+    firstStringRaw(input, [
+      "Content",
+      "content",
+      "CodeContent",
+      "codeContent",
+      "code_content",
+      "markdown",
+      "newStr",
+      "Replacement",
+      "replacement",
+    ]) ??
+    fields.newStr ??
+    extractReplacementChunksContent(input);
+
+  const isPlanPath = fileName !== null && /plan/i.test(fileName) && /\.md$/i.test(fileName);
+
+  return {
+    ...(fields.toolCallId !== undefined ? { toolCallId: fields.toolCallId } : {}),
+    toolName,
+    path: normalizedPath,
+    fileName,
+    content: content !== null && content.length > 0 ? content : null,
+    summary: summary ? summary.trim() : null,
+    userFacing,
+    requestFeedback,
+    isPlanPath,
+    isArtifact: true,
+  };
+}
+
+export function extractAntigravitySwarmAction(
+  toolCall: unknown,
+): AntigravitySwarmToolAction | undefined {
+  const fields = unwrapToolCallFields(toolCall);
+  const bareToolName = fields.toolName ? normalizeBareToolName(fields.toolName) : undefined;
+  const titleMatch = fields.title
+    ? /^(?:run|running)?\s*(swarm|post_message)\b/i.exec(fields.title.trim())
+    : null;
+  const matchedName =
+    bareToolName === "swarm" || bareToolName === "post_message"
+      ? bareToolName
+      : titleMatch?.[1]?.toLowerCase();
+
+  const input = fields.rawInput;
+  if (matchedName === "post_message") {
+    const text = firstStringRaw(input, ["text", "content", "message", "body"]) ?? "";
+    const sender = firstNonEmptyString(input, ["sender", "from", "agent"]);
+    const rawOutObj = asObjectRecord(fields.rawOutput);
+    const seqRaw =
+      typeof input?.seq === "number"
+        ? input.seq
+        : typeof rawOutObj?.seq === "number"
+          ? rawOutObj.seq
+          : undefined;
+    const seq =
+      seqRaw !== undefined && Number.isInteger(seqRaw) && seqRaw >= 0 ? seqRaw : undefined;
+    return {
+      kind: "post_message",
+      ...(fields.toolCallId !== undefined ? { toolCallId: fields.toolCallId } : {}),
+      text,
+      ...(sender !== undefined ? { sender } : {}),
+      ...(seq !== undefined ? { seq } : {}),
+      ...(fields.rawOutput !== undefined ? { rawOutput: fields.rawOutput } : {}),
+    };
+  }
+
+  if (matchedName === "swarm") {
+    const rawAction = firstNonEmptyString(input, ["action"])?.trim().toLowerCase();
+    const action: AntigravitySwarmActionKind =
+      rawAction !== undefined && SWARM_ACTION_KINDS.has(rawAction as AntigravitySwarmActionKind)
+        ? (rawAction as AntigravitySwarmActionKind)
+        : "unknown";
+    const name = firstNonEmptyString(input, ["name"]);
+    const title = firstNonEmptyString(input, ["title"]);
+    const brief = firstStringRaw(input, ["brief"]);
+    const model = firstNonEmptyString(input, ["model"]);
+    const workspace = firstNonEmptyString(input, ["workspace"]);
+    const fork = firstNonEmptyString(input, ["fork"]);
+    const nRaw = typeof input?.n === "number" ? input.n : undefined;
+    const n = nRaw !== undefined && Number.isInteger(nRaw) && nRaw > 0 ? nRaw : undefined;
+    const tasks = Array.isArray(input?.tasks)
+      ? input.tasks.filter(
+          (item): item is string => typeof item === "string" && item.trim().length > 0,
+        )
+      : undefined;
+    return {
+      kind: "swarm",
+      ...(fields.toolCallId !== undefined ? { toolCallId: fields.toolCallId } : {}),
+      action,
+      ...(name !== undefined ? { name } : {}),
+      ...(title !== undefined ? { title } : {}),
+      ...(brief !== undefined ? { brief } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(workspace !== undefined ? { workspace } : {}),
+      ...(fork !== undefined ? { fork } : {}),
+      ...(n !== undefined ? { n } : {}),
+      ...(tasks !== undefined && tasks.length > 0 ? { tasks } : {}),
+      ...(fields.rawOutput !== undefined ? { rawOutput: fields.rawOutput } : {}),
+    };
+  }
+
+  return undefined;
+}

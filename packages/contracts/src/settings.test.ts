@@ -8,6 +8,11 @@ import {
   ProviderInstanceId,
 } from "./providerInstance.ts";
 import {
+  ANTIGRAVITY_OAUTH_FLOW_MODES,
+  ANTIGRAVITY_ORCHESTRATOR_EFFORTS,
+  AntigravityOAuthFlowMode,
+  AntigravityOrchestratorEffort,
+  AntigravitySettings,
   ClientSettingsSchema,
   ClientSettingsPatch,
   ClientServerSettingsPatch,
@@ -42,6 +47,13 @@ const decodeClientServerSettingsPatch = Schema.decodeUnknownSync(ClientServerSet
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+const decodeAntigravitySettings = Schema.decodeUnknownSync(AntigravitySettings);
+const decodeAntigravityOAuthFlowMode = Schema.decodeSync(AntigravityOAuthFlowMode);
+const decodeUnknownAntigravityOAuthFlowMode = Schema.decodeUnknownSync(AntigravityOAuthFlowMode);
+const decodeAntigravityOrchestratorEffort = Schema.decodeSync(AntigravityOrchestratorEffort);
+const decodeUnknownAntigravityOrchestratorEffort = Schema.decodeUnknownSync(
+  AntigravityOrchestratorEffort,
+);
 
 it("drops theme defaults from a client's settings patch", () => {
   expect(
@@ -553,5 +565,111 @@ describe("server model preferences", () => {
     const input = { favorites: [], providerModelPreferences: {} };
     expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
     expect(decodeServerSettingsPatch(input)).toEqual(input);
+  });
+});
+
+describe("AntigravitySettings", () => {
+  it("decodes an empty legacy object with backward-compatible defaults", () => {
+    expect(decodeAntigravitySettings({})).toEqual({
+      enabled: false,
+      authMethod: "oauth-personal",
+      oauthFlowMode: "auto",
+      apiKey: "",
+      gcpProject: "",
+      gcpLocation: "",
+      binaryPath: "",
+      customModels: [],
+      defaultOrchestratorModel: "",
+      defaultOrchestratorEffort: "",
+      defaultExecutorModel: "",
+      defaultExecutorEffort: "",
+    });
+  });
+
+  it("decodes legacy saved configs missing new fields without breaking existing values", () => {
+    expect(
+      decodeAntigravitySettings({
+        enabled: true,
+        authMethod: "oauth-business",
+        gcpProject: "my-gcp-project",
+        binaryPath: "/usr/local/bin/agy",
+      }),
+    ).toEqual({
+      enabled: true,
+      authMethod: "oauth-business",
+      oauthFlowMode: "auto",
+      apiKey: "",
+      gcpProject: "my-gcp-project",
+      gcpLocation: "",
+      binaryPath: "/usr/local/bin/agy",
+      customModels: [],
+      defaultOrchestratorModel: "",
+      defaultOrchestratorEffort: "",
+      defaultExecutorModel: "",
+      defaultExecutorEffort: "",
+    });
+  });
+
+  it("validates oauthFlowMode and orchestrator/executor defaults", () => {
+    expect(ANTIGRAVITY_OAUTH_FLOW_MODES.map((mode) => mode.value)).toEqual([
+      "auto",
+      "browser-loopback",
+      "code",
+    ]);
+    expect(ANTIGRAVITY_ORCHESTRATOR_EFFORTS).toEqual(["", "low", "medium", "high", "xhigh", "max"]);
+
+    for (const mode of ["auto", "browser-loopback", "code"] as const) {
+      expect(decodeAntigravityOAuthFlowMode(mode)).toBe(mode);
+    }
+    expect(() => decodeUnknownAntigravityOAuthFlowMode("device-code")).toThrow();
+
+    for (const effort of ANTIGRAVITY_ORCHESTRATOR_EFFORTS) {
+      expect(decodeAntigravityOrchestratorEffort(effort)).toBe(effort);
+    }
+    expect(() => decodeUnknownAntigravityOrchestratorEffort("ultra")).toThrow();
+
+    expect(
+      decodeAntigravitySettings({
+        oauthFlowMode: "code",
+        defaultOrchestratorModel: "  gemini-3-pro  ",
+        defaultOrchestratorEffort: "xhigh",
+        defaultExecutorModel: "  gemini-3-flash ",
+        defaultExecutorEffort: "medium",
+      }),
+    ).toMatchObject({
+      oauthFlowMode: "code",
+      defaultOrchestratorModel: "gemini-3-pro",
+      defaultOrchestratorEffort: "xhigh",
+      defaultExecutorModel: "gemini-3-flash",
+      defaultExecutorEffort: "medium",
+    });
+  });
+
+  it("places oauthFlowMode right after authMethod and hides orchestrator/executor defaults in form metadata", () => {
+    const schemaAnnotation =
+      Schema.resolveAnnotations(AntigravitySettings)?.providerSettingsFormSchema;
+    expect(schemaAnnotation?.order).toEqual([
+      "authMethod",
+      "oauthFlowMode",
+      "apiKey",
+      "gcpProject",
+      "gcpLocation",
+      "binaryPath",
+    ]);
+
+    const resolveFieldAnnotation = (field: keyof typeof AntigravitySettings.fields) => {
+      const fieldSchema = AntigravitySettings.fields[field];
+      return (Schema.resolveAnnotationsKey(fieldSchema) ?? Schema.resolveAnnotations(fieldSchema))
+        ?.providerSettingsForm;
+    };
+
+    expect(resolveFieldAnnotation("oauthFlowMode")).toMatchObject({
+      control: "select",
+      options: ANTIGRAVITY_OAUTH_FLOW_MODES,
+    });
+    expect(resolveFieldAnnotation("defaultOrchestratorModel")).toEqual({ hidden: true });
+    expect(resolveFieldAnnotation("defaultOrchestratorEffort")).toEqual({ hidden: true });
+    expect(resolveFieldAnnotation("defaultExecutorModel")).toEqual({ hidden: true });
+    expect(resolveFieldAnnotation("defaultExecutorEffort")).toEqual({ hidden: true });
   });
 });

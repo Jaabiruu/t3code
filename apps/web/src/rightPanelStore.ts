@@ -32,6 +32,8 @@ const RIGHT_PANEL_KINDS = [
   "issue",
   "thread",
   "linked-thread",
+  "swarm",
+  "artifacts",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -109,7 +111,9 @@ export type RightPanelSurface =
    */
   | ThreadSurface
   /** A linked environment's thread, read through `viaEnvironmentId`; it has no thread here. */
-  | LinkedThreadSurface;
+  | LinkedThreadSurface
+  | { id: "swarm"; kind: "swarm" }
+  | { id: "artifacts"; kind: "artifacts"; selectedArtifactId?: string };
 
 export type ThreadSurface = { id: `thread:${string}`; kind: "thread"; threadId: ThreadId };
 
@@ -130,7 +134,7 @@ export function decodeThreadSurface(surface: object): ThreadSurface | null {
 }
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
-const RIGHT_PANEL_STORAGE_VERSION = 16;
+const RIGHT_PANEL_STORAGE_VERSION = 17;
 
 export const PULL_REQUESTS_PANEL_REF = scopeThreadRef(
   EnvironmentId.make("pull-requests-panel"),
@@ -178,7 +182,10 @@ interface RightPanelStoreState {
   openProactive: (
     ref: ScopedThreadRef,
     request:
-      | Extract<RightPanelSurface, { kind: "pull-request" | "pull-requests" }>
+      | Extract<
+          RightPanelSurface,
+          { kind: "pull-request" | "pull-requests" | "swarm" | "artifacts" }
+        >
       | { kind: "diff"; turnId: RunId },
     expectedUserActionRevision: number,
     activateExisting?: boolean,
@@ -299,6 +306,10 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "device":
       return { id: "device", kind };
+    case "swarm":
+      return { id: "swarm", kind };
+    case "artifacts":
+      return { id: "artifacts", kind };
   }
 };
 
@@ -677,6 +688,21 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                         }),
                       ];
                     }
+                    if (surface.kind === "swarm") {
+                      return [{ id: "swarm", kind: "swarm" }];
+                    }
+                    if (surface.kind === "artifacts") {
+                      const selectedArtifactId =
+                        "selectedArtifactId" in surface &&
+                        typeof surface.selectedArtifactId === "string"
+                          ? surface.selectedArtifactId
+                          : undefined;
+                      return [
+                        selectedArtifactId === undefined
+                          ? { id: "artifacts", kind: "artifacts" }
+                          : { id: "artifacts", kind: "artifacts", selectedArtifactId },
+                      ];
+                    }
                     if (surface.kind !== "terminal") return [surface];
                     if (
                       !("resourceId" in surface) ||
@@ -835,7 +861,18 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return state;
           }
           opened = true;
-          return automaticUpdate(state, threadKey, (current) => upsertSurface(current, request));
+          return automaticUpdate(state, threadKey, (current) => {
+            const next = upsertSurface(current, request);
+            if (request.kind !== "artifacts" || request.selectedArtifactId === undefined) {
+              return next;
+            }
+            return {
+              ...next,
+              surfaces: next.surfaces.map((entry) =>
+                entry.id === request.id && entry.kind === "artifacts" ? request : entry,
+              ),
+            };
+          });
         });
         return opened;
       },

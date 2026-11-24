@@ -11,6 +11,7 @@ import {
   type AntigravitySettings,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -701,6 +702,139 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
         );
         expect(yield* fs.exists(directories.runtimeTemp)).toBe(false);
         expect(yield* fs.exists(legacyRoot)).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "resolves supportsNativeSwarm from version >= 1.5.0 vs < 1.5.0, merges orchestrator settings.json, and wires oauthFlowMode",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig.ServerConfig;
+        const realSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
+        for (const [label, version, expectedSwarm] of [
+          ["legacy", "1.4.9", false],
+          ["swarm-capable", "1.5.0", true],
+        ] as const) {
+          const instanceId = ProviderInstanceId.make(`antigravity-swarm-${label}`);
+          const executable = {
+            executablePath: "/mock/agy",
+            source: "managed" as const,
+            version,
+            managedVersionDirectory: null,
+          };
+          const instance = yield* AntigravityDriver.create({
+            instanceId,
+            displayName: `Swarm ${label}`,
+            enabled: true,
+            config: {
+              ...AntigravityDriver.defaultConfig(),
+              oauthFlowMode: "browser-loopback",
+              defaultOrchestratorModel: "gemini-3-pro",
+              defaultOrchestratorEffort: "high",
+              defaultExecutorModel: "gemini-3-flash",
+              defaultExecutorEffort: "medium",
+            },
+            environment: [],
+          }).pipe(
+            Effect.provide(
+              Layer.mock(AntigravityInstallation.AntigravityInstallation)({
+                managedDirectory: config.stateDir,
+                resolve: () => Effect.succeed(executable),
+                acquire: () => Effect.succeed(executable),
+              }),
+            ),
+          );
+          const caps = yield* instance.orchestrationAdapter.getCapabilities();
+          expect(caps.subagents.supportsNativeSwarm).toBe(expectedSwarm);
+          expect(caps.planning.emitsProposedPlan).toBe(true);
+          expect(caps.planning.supportsNativeArtifacts).toBe(true);
+        }
+
+        // Verify browser-loopback skips `--login`, omits synthetic SSH_CONNECTION, and preserves settings.json keys alongside orchestrator defaults.
+        for (const mode of ["browser-loopback", "code"] as const) {
+          const modeId = ProviderInstanceId.make(`antigravity-flow-${mode}`);
+          const { profile } = yield* resolveAntigravityInstanceDirectories(config.stateDir, modeId);
+          const settingsDir = path.join(profile, "antigravity-acp");
+          yield* fs.makeDirectory(settingsDir, { recursive: true });
+          const settingsPath = path.join(settingsDir, "settings.json");
+          yield* fs.writeFileString(settingsPath, JSON.stringify({ preservedSetting: "keep" }));
+
+          const agySpawned = yield* Deferred.make<{
+            readonly args: ReadonlyArray<string>;
+            readonly env: NodeJS.ProcessEnv | undefined;
+          }>();
+          const executable = {
+            executablePath: "/mock/agy",
+            source: "managed" as const,
+            version: "1.5.12",
+            managedVersionDirectory: null,
+          };
+          const flowInstance = yield* AntigravityDriver.create({
+            instanceId: modeId,
+            displayName: `Flow ${mode}`,
+            enabled: true,
+            config: {
+              ...AntigravityDriver.defaultConfig(),
+              authMethod: "oauth-personal",
+              oauthFlowMode: mode,
+              defaultOrchestratorModel: "gemini-3-pro",
+              defaultExecutorModel: "gemini-3-flash",
+            },
+            environment: [],
+          }).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                Layer.mock(AntigravityInstallation.AntigravityInstallation)({
+                  managedDirectory: config.stateDir,
+                  resolve: () => Effect.succeed(executable),
+                  acquire: () => Effect.succeed(executable),
+                }),
+                Layer.succeed(
+                  ChildProcessSpawner.ChildProcessSpawner,
+                  ChildProcessSpawner.make((command) => {
+                    const std = command as unknown as {
+                      readonly command?: string;
+                      readonly args?: ReadonlyArray<string>;
+                      readonly env?: NodeJS.ProcessEnv;
+                    };
+                    if (std.command === "/mock/agy") {
+                      return Deferred.succeed(agySpawned, {
+                        args: [...(std.args ?? [])],
+                        env: std.env,
+                      }).pipe(Effect.andThen(Effect.die("mock agy stop")));
+                    }
+                    return realSpawner.spawn(command);
+                  }),
+                ),
+              ),
+            ),
+          );
+
+          yield* (flowInstance.auth?.start(`session-${mode}`) ?? Effect.void).pipe(Effect.ignore);
+          const firstSpawn = yield* Deferred.await(agySpawned);
+          if (mode === "browser-loopback") {
+            expect(firstSpawn.args).not.toContain("--login");
+            expect(firstSpawn.env?.SSH_CONNECTION).toBeUndefined();
+          } else {
+            expect(firstSpawn.args).toContain("--login");
+          }
+
+          const persisted = JSON.parse(yield* fs.readFileString(settingsPath)) as Record<
+            string,
+            unknown
+          >;
+          expect(persisted).toMatchObject({
+            preservedSetting: "keep",
+            auth: { type: "oauth-personal" },
+            orchestrator: {
+              plannerModel: "gemini-3-pro",
+              executorModel: "gemini-3-flash",
+            },
+          });
+        }
       }),
   );
 });

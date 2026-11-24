@@ -50,7 +50,9 @@ import {
   FileDiff,
   Files,
   Globe2,
+  Layers,
   MessagesSquare,
+  Orbit,
   Plus,
   TerminalSquare,
   Volume2Icon,
@@ -160,6 +162,10 @@ export interface RightPanelTabsProps {
   onAddDevice: () => void;
   /** Absent where side chats are not offered. */
   onAddSideChat?: (() => void) | undefined;
+  /** Absent where swarm is not offered. */
+  onAddSwarm?: (() => void) | undefined;
+  /** Absent where artifacts are not offered. */
+  onAddArtifacts?: (() => void) | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -170,6 +176,8 @@ export interface RightPanelTabsProps {
   sideChatAvailable?: boolean;
   /** Overrides the default reason while side chats are available but cannot start. */
   sideChatDisabledReason?: string | null;
+  swarmAvailable?: boolean;
+  artifactsAvailable?: boolean;
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
   children: ReactNode;
 }
@@ -197,6 +205,8 @@ const SURFACE_DISABLED_REASONS = {
   pullRequests: msg("This thread has no linked items."),
   device: msg("Devices are only available from a thread."),
   sideChat: msg("Side chats start after the first message."),
+  swarm: msg("Swarm is unavailable for this thread."),
+  artifacts: msg("Artifacts are unavailable for this thread."),
 } as const;
 
 // Closed keepMounted popups must stop blocking shortcuts once their exit transition ends.
@@ -222,6 +232,8 @@ const SURFACE_UNAVAILABLE_HINTS = {
   pullRequests: msg("No linked items available."),
   device: msg("Available from a thread."),
   sideChat: msg("Available after the first message."),
+  swarm: msg("Unavailable for this thread."),
+  artifacts: msg("Unavailable for this thread."),
 } as const;
 
 type TabContextMenuAction =
@@ -346,6 +358,10 @@ function RightPanelEmptyState(props: {
   onAddDevice: () => void;
   /** Absent where side chats are not offered. */
   onAddSideChat?: (() => void) | undefined;
+  /** Absent where swarm is not offered. */
+  onAddSwarm?: (() => void) | undefined;
+  /** Absent where artifacts are not offered. */
+  onAddArtifacts?: (() => void) | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -355,6 +371,8 @@ function RightPanelEmptyState(props: {
   deviceAvailable: boolean;
   sideChatAvailable: boolean;
   sideChatDisabledReason: string | null;
+  swarmAvailable: boolean;
+  artifactsAvailable: boolean;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -429,6 +447,32 @@ function RightPanelEmptyState(props: {
             disabledReason:
               props.sideChatDisabledReason ?? messages(SURFACE_UNAVAILABLE_HINTS.sideChat),
             onClick: props.onAddSideChat,
+          },
+        ]
+      : []),
+    ...(props.onAddSwarm
+      ? [
+          {
+            label: msg("Swarm"),
+            description: msg("Inspect agent topology and the live swarm message board."),
+            icon: Orbit,
+            shortcut: "W",
+            available: props.swarmAvailable,
+            disabledReason: messages(SURFACE_UNAVAILABLE_HINTS.swarm),
+            onClick: props.onAddSwarm,
+          },
+        ]
+      : []),
+    ...(props.onAddArtifacts
+      ? [
+          {
+            label: msg("Artifacts"),
+            description: msg("Review plans, walkthroughs, and markdown artifacts."),
+            icon: Layers,
+            shortcut: "A",
+            available: props.artifactsAvailable,
+            disabledReason: messages(SURFACE_UNAVAILABLE_HINTS.artifacts),
+            onClick: props.onAddArtifacts,
           },
         ]
       : []),
@@ -631,6 +675,10 @@ function surfaceTitle(
         surface,
         resolve(msg("Thread on {label}", { label: surface.label })),
       );
+    case "swarm":
+      return resolve(msg("Swarm"));
+    case "artifacts":
+      return resolve(msg("Artifacts"));
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return resolve(msg("Browser"));
@@ -725,6 +773,10 @@ function SurfaceIcon({
       return <SideChatTabIcon environmentId={environmentId} threadId={surface.threadId} />;
     case "linked-thread":
       return <MessagesSquare className="size-3 shrink-0" />;
+    case "swarm":
+      return <Orbit className="size-3 shrink-0" />;
+    case "artifacts":
+      return <Layers className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -1273,6 +1325,30 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           },
         ]
       : []),
+    ...(props.onAddSwarm
+      ? [
+          {
+            label: msg("Swarm"),
+            icon: Orbit,
+            shortcut: "W",
+            available: props.swarmAvailable !== false,
+            disabledReason: messages(SURFACE_DISABLED_REASONS.swarm),
+            onClick: props.onAddSwarm,
+          },
+        ]
+      : []),
+    ...(props.onAddArtifacts
+      ? [
+          {
+            label: msg("Artifacts"),
+            icon: Layers,
+            shortcut: "A",
+            available: props.artifactsAvailable !== false,
+            disabledReason: messages(SURFACE_DISABLED_REASONS.artifacts),
+            onClick: props.onAddArtifacts,
+          },
+        ]
+      : []),
   ] as const;
 
   const handleAddSurfaceMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -1698,6 +1774,8 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequests={props.onAddPullRequests}
             onAddDevice={props.onAddDevice}
             onAddSideChat={props.onAddSideChat}
+            onAddSwarm={props.onAddSwarm}
+            onAddArtifacts={props.onAddArtifacts}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
@@ -1707,6 +1785,8 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             deviceAvailable={props.deviceAvailable}
             sideChatAvailable={props.sideChatAvailable === true}
             sideChatDisabledReason={props.sideChatDisabledReason ?? null}
+            swarmAvailable={props.swarmAvailable !== false}
+            artifactsAvailable={props.artifactsAvailable !== false}
           />
         ) : (
           props.children

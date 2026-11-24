@@ -105,6 +105,7 @@ import { useSecretSources } from "./SecretSourceInput";
 import { TextGeneratorsSettings } from "./TextGeneratorsSettings";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
+import { AntigravityOrchestratorSettingsSection } from "./AntigravityOrchestratorSettingsSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
 import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
@@ -1368,7 +1369,7 @@ function ProviderInstanceRow({
     Boolean(recommendedVersion) &&
     liveProvider.versionAdvisory?.canInstallVersion === true;
 
-  return (
+  const card = (
     <ProviderInstanceCard
       environmentId={environmentId}
       secretSources={secretSources}
@@ -1518,4 +1519,29 @@ function ProviderInstanceRow({
       isUpdating={isInstanceUpdateRunning}
     />
   );
+
+  if (mode === "editor" && driver === "antigravity") {
+    return (
+      <>
+        {card}
+        <AntigravityOrchestratorSettingsSection
+          instance={instance}
+          liveProvider={liveProvider}
+          readOnly={readOnly}
+          onUpdateConfig={(nextConfig) => {
+            const { config: _omit, ...rest } = instance;
+            return actions.updateInstance(
+              instanceId,
+              instance,
+              nextConfig !== undefined
+                ? ({ ...rest, config: nextConfig } as ProviderInstanceConfig)
+                : (rest as ProviderInstanceConfig),
+            );
+          }}
+        />
+      </>
+    );
+  }
+
+  return card;
 }

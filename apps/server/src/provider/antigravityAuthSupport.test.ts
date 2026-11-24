@@ -31,9 +31,11 @@ import {
   makeAntigravityStderrHandler,
   makeAntigravityStdoutTransform,
   antigravityLoginResponse,
+  antigravityProfileSettings,
   parseAntigravityAuthorizationUrl,
   prepareAntigravityProfile,
   resolveAntigravityInstanceDirectories,
+  resolveAntigravityOAuthFlowMode,
 } from "./antigravityAuthSupport.ts";
 
 const authorizationUrl =
@@ -904,4 +906,82 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
       }
     }),
   );
+
+  it("resolves oauthFlowMode across desktop, SSH, and explicit overrides and toggles SSH_CONNECTION", () => {
+    const linuxProfile: AntigravityProfile = {
+      platform: "linux",
+      geminiHome: "/t3/userdata/providers/antigravity/profile",
+      acpDirectory: "/t3/userdata/providers/antigravity/profile/antigravity-acp",
+      tokenPath: "/t3/userdata/providers/antigravity/profile/antigravity-acp/acp_token.json",
+      tempDirectory: "/t3/userdata/providers/antigravity/profile/antigravity-acp/tmp",
+      browserCommand: "managed-browser-helper",
+    };
+    expect(resolveAntigravityOAuthFlowMode("auto", { DISPLAY: ":0" }, "linux")).toBe(
+      "browser-loopback",
+    );
+    expect(resolveAntigravityOAuthFlowMode("auto", { WAYLAND_DISPLAY: "wayland-0" }, "linux")).toBe(
+      "browser-loopback",
+    );
+    expect(resolveAntigravityOAuthFlowMode("auto", {}, "darwin")).toBe("browser-loopback");
+    expect(resolveAntigravityOAuthFlowMode("auto", {}, "win32")).toBe("browser-loopback");
+    expect(resolveAntigravityOAuthFlowMode("auto", {}, "linux")).toBe("code");
+    expect(
+      resolveAntigravityOAuthFlowMode("auto", { DISPLAY: ":0", SSH_TTY: "/dev/pts/1" }, "linux"),
+    ).toBe("code");
+    expect(
+      resolveAntigravityOAuthFlowMode("browser-loopback", { SSH_TTY: "/dev/pts/1" }, "linux"),
+    ).toBe("browser-loopback");
+    expect(resolveAntigravityOAuthFlowMode("code", { DISPLAY: ":0" }, "darwin")).toBe("code");
+
+    const loopbackSpawn = buildAntigravityAcpSpawnInput({
+      installation: { executablePath: "/usr/bin/agy" },
+      profile: linuxProfile,
+      cwd: "/project",
+      baseEnv: { HOME: "/home/developer", PATH: "/usr/bin", DISPLAY: ":0" },
+      oauthFlowMode: "auto",
+    });
+    expect(loopbackSpawn.env?.SSH_CONNECTION).toBeUndefined();
+
+    const codeSpawn = buildAntigravityAcpSpawnInput({
+      installation: { executablePath: "/usr/bin/agy" },
+      profile: linuxProfile,
+      cwd: "/project",
+      baseEnv: { HOME: "/home/developer", PATH: "/usr/bin", DISPLAY: ":0" },
+      oauthFlowMode: "code",
+    });
+    expect(codeSpawn.env?.SSH_CONNECTION).toBe("127.0.0.1 0 127.0.0.1 0");
+  });
+
+  it("merges orchestrator defaults into settings.json while preserving other keys and clearing empties", () => {
+    const first = antigravityProfileSettings(
+      { authMethod: "oauth-personal", apiKey: "", gcpProject: "", gcpLocation: "" },
+      {
+        plannerModel: "gemini-3-pro",
+        plannerEffort: "high",
+        executorModel: "gemini-3-flash",
+        executorEffort: "low",
+      },
+      JSON.stringify({ customKey: { nested: true }, auth: { type: "old" } }),
+    );
+    expect(JSON.parse(first)).toEqual({
+      customKey: { nested: true },
+      auth: { type: "oauth-personal" },
+      orchestrator: {
+        plannerModel: "gemini-3-pro",
+        plannerEffort: "high",
+        executorModel: "gemini-3-flash",
+        executorEffort: "low",
+      },
+    });
+
+    const cleared = antigravityProfileSettings(
+      { authMethod: "oauth-personal", apiKey: "", gcpProject: "", gcpLocation: "" },
+      { plannerModel: "", plannerEffort: "", executorModel: "", executorEffort: "" },
+      first,
+    );
+    expect(JSON.parse(cleared)).toEqual({
+      customKey: { nested: true },
+      auth: { type: "oauth-personal" },
+    });
+  });
 });

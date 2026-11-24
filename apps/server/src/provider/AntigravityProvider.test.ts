@@ -298,6 +298,52 @@ describe("Antigravity model catalog", () => {
     expect(thinkingOf("unseen")).toMatchObject({ id: "thinking_level" });
     expect(thinkingOf("unseen")).not.toHaveProperty("currentValue");
   });
+
+  it("keeps non-model ACP configOptions such as planner/executor options alongside thought_level", () => {
+    const models = buildAntigravityModelsFromSession({
+      configOptions: [
+        {
+          ...modelConfig,
+          currentValue: "orchestrator-1",
+          options: [{ value: "orchestrator-1", name: "Orchestrator" }],
+        },
+        {
+          id: "thinking_level",
+          name: "Thinking",
+          category: "thought_level",
+          type: "select",
+          currentValue: "medium",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "medium", name: "Medium" },
+          ],
+        },
+        {
+          id: "planner_model",
+          name: "Planner Model",
+          type: "select",
+          currentValue: "gemini-pro",
+          options: [
+            { value: "gemini-pro", name: "Gemini Pro" },
+            { value: "gemini-flash", name: "Gemini Flash" },
+          ],
+        },
+        {
+          id: "mode",
+          name: "Mode",
+          category: "mode",
+          type: "select",
+          currentValue: "default",
+          options: [{ value: "default", name: "Default" }],
+        },
+      ],
+    });
+    expect(models).toHaveLength(1);
+    expect(models[0]?.capabilities?.optionDescriptors?.map((d) => d.id)).toEqual([
+      "thinking_level",
+      "planner_model",
+    ]);
+  });
 });
 
 it.layer(layerTest)("Antigravity provider snapshots", (it) => {

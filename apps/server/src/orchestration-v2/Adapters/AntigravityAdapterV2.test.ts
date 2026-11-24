@@ -2952,3 +2952,326 @@ describe("AntigravityAdapterV2 session system prompt", () => {
       }).pipe(Effect.provide(layerSession)),
   );
 });
+
+describe("AntigravityAdapterV2 capabilities, ProposedPlanCard, and orchestrator defaults", () => {
+  it("advertises emitsProposedPlan and supportsNativeArtifacts with default supportsNativeSwarm=false", () => {
+    assert.isTrue(flavor.capabilities.planning.emitsProposedPlan);
+    assert.isTrue(flavor.capabilities.planning.supportsNativeArtifacts);
+    assert.isFalse(flavor.capabilities.subagents.supportsNativeSwarm);
+  });
+
+  it("extracts proposed plan markdown for plan paths and RequestFeedback=true writes only", () => {
+    assert.equal(
+      flavor.extractProposedPlanMarkdown?.({
+        toolCallId: "plan-1",
+        title: "write_file",
+        kind: "edit",
+        status: "completed",
+        data: {
+          rawInput: {
+            Path: "/profile/antigravity-acp/brain/sess-1/implementation_plan.md",
+            Content: "# My Plan\n\nDetails",
+          },
+        },
+      }),
+      "# My Plan\n\nDetails",
+    );
+
+    assert.equal(
+      flavor.extractProposedPlanMarkdown?.({
+        toolCallId: "plan-2",
+        title: "edit_file",
+        kind: "edit",
+        status: "completed",
+        data: {
+          rawInput: {
+            Path: "/profile/antigravity-acp/brain/sess-1/custom_notes.md",
+            Replacement: "# Review Requested",
+            ArtifactMetadata: { RequestFeedback: true },
+          },
+        },
+      }),
+      "# Review Requested",
+    );
+
+    assert.isUndefined(
+      flavor.extractProposedPlanMarkdown?.({
+        toolCallId: "note-1",
+        title: "write_file",
+        kind: "edit",
+        status: "completed",
+        data: {
+          rawInput: {
+            Path: "/profile/antigravity-acp/brain/sess-1/walkthrough.md",
+            Content: "# Walkthrough",
+            ArtifactMetadata: { RequestFeedback: false },
+          },
+        },
+      }),
+    );
+
+    assert.isUndefined(
+      flavor.extractProposedPlanMarkdown?.({
+        toolCallId: "src-1",
+        title: "write_file",
+        kind: "edit",
+        status: "completed",
+        data: {
+          rawInput: {
+            Path: "/repo/src/index.ts",
+            Content: "export const x = 1;",
+          },
+        },
+      }),
+    );
+  });
+
+  it.effect(
+    "resolves dynamic supportsNativeSwarm, applies orchestrator defaults, and emits ProposedPlanCard live",
+    () =>
+      Effect.gen(function* () {
+        const swarmFlag = yield* Ref.make(false);
+        const setOptionsCalls: Array<readonly [string, unknown]> = [];
+        let updateHandler:
+          | ((
+              notification: EffectAcpSchema.SessionNotification,
+            ) => Effect.Effect<void, EffectAcpErrors.AcpError>)
+          | undefined;
+        let runtimeStarted = false;
+
+        const makeMockRuntime = (): AcpSessionRuntime.AcpSessionRuntime["Service"] => ({
+          handleRequestPermission: () => Effect.void,
+          handleElicitation: () => Effect.void,
+          handleMcpConnect: () => Effect.void,
+          handleMcpMessage: () => Effect.void,
+          handleMcpDisconnect: () => Effect.void,
+          handleMcpNotification: () => Effect.void,
+          handleReadTextFile: () => Effect.void,
+          handleWriteTextFile: () => Effect.void,
+          handleCreateTerminal: () => Effect.void,
+          handleTerminalOutput: () => Effect.void,
+          handleTerminalWaitForExit: () => Effect.void,
+          handleTerminalKill: () => Effect.void,
+          handleTerminalRelease: () => Effect.void,
+          handleSessionUpdate: (handler) => {
+            updateHandler = handler;
+            return Effect.void;
+          },
+          handleElicitationComplete: () => Effect.void,
+          handleUnknownExtRequest: () => Effect.void,
+          handleUnknownExtNotification: () => Effect.void,
+          handleExtRequest: () => Effect.void,
+          handleExtNotification: () => Effect.void,
+          initialize: () => Effect.succeed({ protocolVersion: 1 }),
+          start: () =>
+            Effect.sync(() => {
+              runtimeStarted = true;
+              return {
+                sessionId: "sess-live-1",
+                initializeResult: { protocolVersion: 1 },
+                sessionSetupResult: {
+                  sessionId: "sess-live-1",
+                  configOptions: [
+                    {
+                      id: "model",
+                      name: "Model",
+                      category: "model",
+                      type: "select",
+                      currentValue: "orchestrator-v1",
+                      options: [{ value: "orchestrator-v1", name: "Orchestrator" }],
+                    },
+                    {
+                      id: "planner_model",
+                      name: "Planner Model",
+                      type: "select",
+                      currentValue: "gemini-flash",
+                      options: [
+                        { value: "gemini-flash", name: "Flash" },
+                        { value: "gemini-pro", name: "Pro" },
+                      ],
+                    },
+                    {
+                      id: "executor_effort",
+                      name: "Executor Effort",
+                      type: "select",
+                      currentValue: "low",
+                      options: [
+                        { value: "low", name: "Low" },
+                        { value: "high", name: "High" },
+                      ],
+                    },
+                  ],
+                },
+                modelConfigId: "model",
+              };
+            }),
+          getEvents: () => Stream.empty,
+          drainEvents: Effect.void,
+          getModeState: Effect.undefined,
+          getConfigOptions: Effect.succeed([
+            {
+              id: "model",
+              name: "Model",
+              category: "model",
+              type: "select",
+              currentValue: "orchestrator-v1",
+              options: [{ value: "orchestrator-v1", name: "Orchestrator" }],
+            },
+            {
+              id: "planner_model",
+              name: "Planner Model",
+              type: "select",
+              currentValue: "gemini-flash",
+              options: [
+                { value: "gemini-flash", name: "Flash" },
+                { value: "gemini-pro", name: "Pro" },
+              ],
+            },
+            {
+              id: "executor_effort",
+              name: "Executor Effort",
+              type: "select",
+              currentValue: "low",
+              options: [
+                { value: "low", name: "Low" },
+                { value: "high", name: "High" },
+              ],
+            },
+          ]),
+          configOptionChanges: Stream.empty,
+          loadSession: () => Effect.die("unused"),
+          resumeSession: () => Effect.die("unused"),
+          forkSession: () => Effect.die("unused"),
+          listSessions: () => Effect.succeed({ sessions: [] }),
+          closeSession: () => Effect.succeed({}),
+          deleteSession: () => Effect.succeed({}),
+          listProviders: Effect.succeed({ providers: [] }),
+          setProvider: () => Effect.succeed({}),
+          disableProvider: () => Effect.succeed({}),
+          logout: Effect.succeed({}),
+          prompt: () =>
+            Effect.gen(function* () {
+              if (updateHandler) {
+                yield* updateHandler({
+                  sessionId: "sess-live-1",
+                  update: {
+                    sessionUpdate: "tool_call",
+                    toolCallId: "plan-call-1",
+                    title: "Running write_file",
+                    kind: "edit",
+                    status: "in_progress",
+                    rawInput: {
+                      Path: "/profile/antigravity-acp/brain/sess-live-1/implementation_plan.md",
+                      Content: "# Live Plan\n\n1. Emit card",
+                      ArtifactMetadata: { RequestFeedback: true, UserFacing: true },
+                    },
+                  },
+                });
+                yield* updateHandler({
+                  sessionId: "sess-live-1",
+                  update: {
+                    sessionUpdate: "tool_call_update",
+                    toolCallId: "plan-call-1",
+                    status: "completed",
+                  },
+                });
+              }
+              return { stopReason: "end_turn" };
+            }),
+          cancel: Effect.void,
+          setMode: () => Effect.succeed({}),
+          setSessionModel: () => Effect.succeed({}),
+          setConfigOption: (id, value) =>
+            Effect.sync(() => {
+              setOptionsCalls.push([id, value]);
+              return { configOptions: [] };
+            }),
+          setModel: () => Effect.void,
+          request: () => Effect.succeed({}),
+          notify: () => Effect.void,
+        });
+
+        const instanceId = ProviderInstanceId.make("antigravity-adapter-unit");
+        const adapter = yield* makeAntigravityAdapterV2({
+          instanceId,
+          selfInvocation: yield* resolveSelfInvocation(),
+          makeRuntime: () => Effect.succeed(makeMockRuntime()),
+          withProcess: (_stop, task) => task,
+          defaultModel: Effect.succeed("orchestrator-v1"),
+          supportsNativeSwarm: Ref.get(swarmFlag),
+          orchestrator: {
+            plannerModel: "gemini-pro",
+            executorModel: "unadvertised-model",
+            executorEffort: "high",
+          },
+        });
+
+        assert.isFalse((yield* adapter.getCapabilities()).subagents.supportsNativeSwarm);
+        yield* Ref.set(swarmFlag, true);
+        assert.isTrue((yield* adapter.getCapabilities()).subagents.supportsNativeSwarm);
+
+        const threadId = ThreadId.make("thread-live-plan");
+        const modelSelection = { instanceId, model: "orchestrator-v1" } as const;
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const session = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("ps-live-plan"),
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.isTrue(runtimeStarted);
+        assert.isTrue(session.providerSession.capabilities.subagents.supportsNativeSwarm);
+        assert.isTrue(session.providerSession.capabilities.planning.emitsProposedPlan);
+        assert.isTrue(session.providerSession.capabilities.planning.supportsNativeArtifacts);
+        assert.deepEqual(setOptionsCalls, [
+          ["planner_model", "gemini-pro"],
+          ["executor_effort", "high"],
+        ]);
+
+        const providerThread = yield* session.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* session.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            modelSelection,
+            runtimePolicy,
+            now: yield* DateTime.now,
+            messageText: "Write a plan.",
+          }),
+        );
+
+        const events = yield* session.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        assert.isTrue(
+          events.some(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "proposed_plan" &&
+              event.turnItem.markdown === "# Live Plan\n\n1. Emit card",
+          ),
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+          ),
+        ),
+        Effect.scoped,
+      ),
+  );
+});

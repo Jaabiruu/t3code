@@ -379,6 +379,7 @@ export const OrchestrationV2PlanningCapabilities = Schema.Struct({
   emitsProposedPlan: Schema.Boolean,
   supportsStructuredQuestions: Schema.Boolean,
   planDeltasHaveItemIds: Schema.Boolean,
+  supportsNativeArtifacts: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2PlanningCapabilities = typeof OrchestrationV2PlanningCapabilities.Type;
 
@@ -389,6 +390,7 @@ export const OrchestrationV2SubagentCapabilities = Schema.Struct({
   canWaitForSubagents: Schema.Boolean,
   canCloseSubagents: Schema.Boolean,
   canForkSubagentThread: Schema.Boolean,
+  supportsNativeSwarm: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2SubagentCapabilities = typeof OrchestrationV2SubagentCapabilities.Type;
 
@@ -4098,6 +4100,8 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getThreadProjection: "orchestration.getThreadProjection",
   getWorkflowScript: "orchestration.getWorkflowScript",
   getNativeChildWork: "orchestration.getNativeChildWork",
+  getNativeSwarmState: "orchestration.getNativeSwarmState",
+  getNativeArtifacts: "orchestration.getNativeArtifacts",
   stopWorkflow: "orchestration.stopWorkflow",
   forceStopThread: "orchestration.forceStopThread",
   getTurnItem: "orchestration.getTurnItem",
@@ -4620,6 +4624,147 @@ export class OrchestrationV2GetNativeChildWorkError extends Schema.TaggedError<O
   }
 }
 
+export const OrchestrationV2GetNativeSwarmStateInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationV2GetNativeSwarmStateInput =
+  typeof OrchestrationV2GetNativeSwarmStateInput.Type;
+
+export const OrchestrationV2NativeSwarmMemberState = Schema.Literals([
+  "working",
+  "waiting",
+  "stopped",
+  "killed",
+]);
+export type OrchestrationV2NativeSwarmMemberState =
+  typeof OrchestrationV2NativeSwarmMemberState.Type;
+
+export const OrchestrationV2NativeSwarmMember = Schema.Struct({
+  name: Schema.String,
+  conversationId: Schema.NullOr(Schema.String),
+  role: Schema.NullOr(Schema.String),
+  model: Schema.NullOr(Schema.String),
+  state: OrchestrationV2NativeSwarmMemberState,
+  latestToolCall: Schema.NullOr(Schema.String),
+  updatedAt: Schema.NullOr(Schema.String),
+  steps: Schema.NullOr(Schema.Array(OrchestrationV2NativeChildStep)),
+});
+export type OrchestrationV2NativeSwarmMember = typeof OrchestrationV2NativeSwarmMember.Type;
+
+export const OrchestrationV2NativeSwarmPostKind = Schema.Literals([
+  "brief",
+  "update",
+  "question",
+  "result",
+  "system",
+]);
+export type OrchestrationV2NativeSwarmPostKind = typeof OrchestrationV2NativeSwarmPostKind.Type;
+
+export const OrchestrationV2NativeSwarmPost = Schema.Struct({
+  id: Schema.String,
+  seq: NonNegativeInt,
+  sender: Schema.String,
+  mentions: Schema.Array(Schema.String),
+  content: Schema.String,
+  timestamp: Schema.NullOr(Schema.String),
+  kind: OrchestrationV2NativeSwarmPostKind,
+  screenshotPath: Schema.NullOr(Schema.String),
+  screenshotCaption: Schema.NullOr(Schema.String),
+});
+export type OrchestrationV2NativeSwarmPost = typeof OrchestrationV2NativeSwarmPost.Type;
+
+export const OrchestrationV2NativeSwarmEdge = Schema.Struct({
+  from: Schema.String,
+  to: Schema.String,
+  count: NonNegativeInt,
+  lastSeq: NonNegativeInt,
+  lastActivityAt: Schema.NullOr(Schema.String),
+});
+export type OrchestrationV2NativeSwarmEdge = typeof OrchestrationV2NativeSwarmEdge.Type;
+
+export const OrchestrationV2NativeSwarmOverviewThread = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  goal: Schema.String,
+  tasks: Schema.Array(Schema.String),
+});
+export type OrchestrationV2NativeSwarmOverviewThread =
+  typeof OrchestrationV2NativeSwarmOverviewThread.Type;
+
+export const OrchestrationV2NativeSwarmOverview = Schema.Struct({
+  goalTitle: Schema.NullOr(Schema.String),
+  goalLine: Schema.NullOr(Schema.String),
+  tasks: Schema.Record(Schema.String, Schema.String),
+  threads: Schema.Array(OrchestrationV2NativeSwarmOverviewThread),
+});
+export type OrchestrationV2NativeSwarmOverview = typeof OrchestrationV2NativeSwarmOverview.Type;
+
+export const OrchestrationV2GetNativeSwarmStateResult = Schema.Struct({
+  active: Schema.Boolean,
+  title: Schema.NullOr(Schema.String),
+  overview: Schema.NullOr(OrchestrationV2NativeSwarmOverview),
+  members: Schema.Array(OrchestrationV2NativeSwarmMember),
+  posts: Schema.Array(OrchestrationV2NativeSwarmPost),
+  edges: Schema.Array(OrchestrationV2NativeSwarmEdge),
+  updatedAt: Schema.NullOr(Schema.String),
+});
+export type OrchestrationV2GetNativeSwarmStateResult =
+  typeof OrchestrationV2GetNativeSwarmStateResult.Type;
+
+export class OrchestrationV2GetNativeSwarmStateError extends Schema.TaggedError<OrchestrationV2GetNativeSwarmStateError>()(
+  "OrchestrationV2GetNativeSwarmStateError",
+  {
+    threadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return "Failed to read the native swarm state.";
+  }
+}
+
+export const OrchestrationV2GetNativeArtifactsInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationV2GetNativeArtifactsInput =
+  typeof OrchestrationV2GetNativeArtifactsInput.Type;
+
+export const OrchestrationV2NativeArtifactKind = Schema.Literals(["plan", "walkthrough", "other"]);
+export type OrchestrationV2NativeArtifactKind = typeof OrchestrationV2NativeArtifactKind.Type;
+
+export const OrchestrationV2NativeArtifact = Schema.Struct({
+  id: Schema.String,
+  fileName: Schema.String,
+  title: Schema.String,
+  summary: Schema.NullOr(Schema.String),
+  userFacing: Schema.Boolean,
+  requestFeedback: Schema.Boolean,
+  kind: OrchestrationV2NativeArtifactKind,
+  content: Schema.String,
+  truncated: Schema.Boolean,
+  updatedAt: Schema.NullOr(Schema.String),
+  mediaPaths: Schema.Array(Schema.String),
+});
+export type OrchestrationV2NativeArtifact = typeof OrchestrationV2NativeArtifact.Type;
+
+export const OrchestrationV2GetNativeArtifactsResult = Schema.Struct({
+  artifacts: Schema.Array(OrchestrationV2NativeArtifact),
+});
+export type OrchestrationV2GetNativeArtifactsResult =
+  typeof OrchestrationV2GetNativeArtifactsResult.Type;
+
+export class OrchestrationV2GetNativeArtifactsError extends Schema.TaggedError<OrchestrationV2GetNativeArtifactsError>()(
+  "OrchestrationV2GetNativeArtifactsError",
+  {
+    threadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return "Failed to read the native artifacts.";
+  }
+}
+
 const WORKFLOW_FILE_ERROR_MESSAGES = {
   "invalid-path": "Workflow files must be absolute paths with the expected extension.",
   "root-unavailable": "Workflow file root unavailable.",
@@ -4811,6 +4956,14 @@ export const OrchestrationV2RpcSchemas = {
   getNativeChildWork: {
     input: OrchestrationV2GetNativeChildWorkInput,
     output: OrchestrationV2GetNativeChildWorkResult,
+  },
+  getNativeSwarmState: {
+    input: OrchestrationV2GetNativeSwarmStateInput,
+    output: OrchestrationV2GetNativeSwarmStateResult,
+  },
+  getNativeArtifacts: {
+    input: OrchestrationV2GetNativeArtifactsInput,
+    output: OrchestrationV2GetNativeArtifactsResult,
   },
   getTurnItem: {
     input: OrchestrationV2GetTurnItemInput,

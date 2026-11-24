@@ -200,6 +200,20 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       staleTimeMs: 0,
       idleTtlMs: 0,
     }),
+    // Mounted only while a native swarm inspector is open; swarm state changes between opens.
+    nativeSwarmState: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:native-swarm-state",
+      tag: ORCHESTRATION_V2_WS_METHODS.getNativeSwarmState,
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+    }),
+    // Mounted only while a native artifacts inspector is open; artifacts change between opens.
+    nativeArtifacts: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:native-artifacts",
+      tag: ORCHESTRATION_V2_WS_METHODS.getNativeArtifacts,
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+    }),
     stopWorkflow: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:orchestration:stop-workflow",
       tag: ORCHESTRATION_V2_WS_METHODS.stopWorkflow,

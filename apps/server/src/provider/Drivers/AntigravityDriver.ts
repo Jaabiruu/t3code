@@ -43,16 +43,19 @@ import {
   antigravityAuthConfigIssue,
   antigravityAuthLabel,
   antigravityAuthUsesBrowser,
+  antigravityOrchestratorConfigFromSettings,
   buildAntigravityAcpSpawnInput,
   isAntigravitySignInRequiredError,
   prepareAntigravityProfile,
   resolveAntigravityInstanceDirectories,
+  resolveAntigravityOAuthFlowMode,
   type AntigravityAuthConfig,
 } from "../antigravityAuthSupport.ts";
 import {
   antigravityModelOptions,
   antigravitySessionMode,
   antigravityThinkingConfig,
+  isAntigravitySwarmSupportedVersion,
   makeAntigravityAcpRuntime,
   type AntigravityAcpRuntimeInput,
 } from "../acp/AntigravityAcpSupport.ts";
@@ -155,6 +158,7 @@ export const AntigravityDriver: ProviderDriver<
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const makeNativeLogger = yield* makeAcpNativeLoggerFactory();
     const settings = { ...config, enabled } satisfies AntigravitySettings;
+    const orchestrator = antigravityOrchestratorConfigFromSettings(settings);
     const auth: AntigravityAuthConfig = {
       authMethod: settings.authMethod,
       // The instance registry has already read a referenced key from its secret provider.
@@ -257,6 +261,8 @@ export const AntigravityDriver: ProviderDriver<
         profileDirectory,
         baseEnv: processEnvironment,
         auth,
+        ...(orchestrator === undefined ? {} : { orchestrator }),
+        oauthFlowMode: settings.oauthFlowMode,
         userHome,
         tempDirectory: directories.runtimeTemp,
       }).pipe(
@@ -307,6 +313,7 @@ export const AntigravityDriver: ProviderDriver<
           baseEnv,
           auth,
           runtimeTempDirectory,
+          oauthFlowMode: settings.oauthFlowMode,
         }),
       };
     });
@@ -424,7 +431,14 @@ export const AntigravityDriver: ProviderDriver<
     const codeLogin = Effect.fn("AntigravityDriver.codeLogin")(function* (input: {
       readonly onAuthorizationUrl: (url: string) => Effect.Effect<void, AcpErrors.AcpError>;
     }) {
-      if (auth.authMethod !== "oauth-personal") return undefined;
+      const resolvedOAuthFlow = resolveAntigravityOAuthFlowMode(
+        settings.oauthFlowMode,
+        processEnvironment,
+        yield* HostProcess.Platform,
+      );
+      if (auth.authMethod !== "oauth-personal" || resolvedOAuthFlow === "browser-loopback") {
+        return undefined;
+      }
       const cwd = yield* fileSystem
         .makeTempDirectoryScoped({ prefix: "t3-antigravity-login-" })
         .pipe(
@@ -619,6 +633,19 @@ export const AntigravityDriver: ProviderDriver<
       ),
     );
     const defaultModel = currentCatalog.pipe(Effect.map((catalog) => catalog?.defaultChatModel));
+    const supportsNativeSwarm = Effect.gen(function* () {
+      const snapshot = yield* provider.snapshot.getSnapshot;
+      if (snapshot.slashCommands?.some((command) => command.name === "swarm") === true) {
+        return true;
+      }
+      if (isAntigravitySwarmSupportedVersion(snapshot.version)) {
+        return true;
+      }
+      const resolved = yield* installation
+        .resolve(settings.binaryPath, processEnvironment)
+        .pipe(Effect.orElseSucceed(() => undefined));
+      return isAntigravitySwarmSupportedVersion(resolved?.version);
+    });
     const orchestrationAdapter = yield* makeAntigravityAdapterV2({
       instanceId,
       selfInvocation,
@@ -630,6 +657,8 @@ export const AntigravityDriver: ProviderDriver<
           (snapshot) => snapshot.slashCommands?.some((command) => command.name === "goal") === true,
         ),
       ),
+      supportsNativeSwarm,
+      ...(orchestrator === undefined ? {} : { orchestrator }),
       profileDirectory,
       onSessionStarted: (started, cwd) =>
         provider.onSessionStarted(started, cwd).pipe(Effect.andThen(authFlow.onSignedInElsewhere)),
