@@ -16,6 +16,7 @@ import { buildRemoteNodeEnvScript } from "@t3tools/ssh/tunnel";
 import { satisfiesSemverRange } from "@t3tools/shared/semver";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import { getDesktopFlavorProfile } from "../app/DesktopFlavor.ts";
 import * as DesktopManagedPolicy from "../app/DesktopManagedPolicy.ts";
 import { parseWslDistroList, type WslDistro } from "./wslPathParsing.ts";
 
@@ -271,9 +272,9 @@ const WSL_RUNTIME_SELECTION_GRACE_MINUTES = 5;
 
 const sanitizeWslRuntimeId = (value: string): string => value.replace(/[^A-Za-z0-9._-]/g, "_");
 
-const runtimeParentAssignment = (t3Home: string | null): string =>
+const runtimeParentAssignment = (t3Home: string | null, defaultHomeDirName = ".t3"): string =>
   t3Home === null
-    ? 'runtime_parent="$HOME/.t3/wsl-runtime"'
+    ? `runtime_parent="$HOME/${defaultHomeDirName}/wsl-runtime"`
     : `runtime_parent=${shellQuote(`${t3Home}/wsl-runtime`)}`;
 
 // A null archive path asks for a staging directory to copy the archive into, unless the cache is ready.
@@ -282,11 +283,12 @@ export const buildWslRuntimeInstallScript = (
   runtimeId: string,
   archiveSha256: string,
   t3Home: string | null,
+  defaultHomeDirName = ".t3",
 ): string => {
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   const readyCheck = [
     "set -eu",
-    runtimeParentAssignment(t3Home),
+    runtimeParentAssignment(t3Home, defaultHomeDirName),
     `runtime_root="$runtime_parent/${safeRuntimeId}"`,
     `ready_marker="$runtime_root/${WSL_RUNTIME_READY_MARKER}"`,
     "runtime_entry_runs() {",
@@ -382,11 +384,15 @@ export const buildWslRuntimeInstallScript = (
 // Two hours exceeds cold-install time while bounding orphan retention.
 const ORPHANED_RUNTIME_SCRATCH_MAX_AGE_MINUTES = 120;
 
-export const buildWslRuntimePruneScript = (runtimeId: string, t3Home: string | null): string => {
+export const buildWslRuntimePruneScript = (
+  runtimeId: string,
+  t3Home: string | null,
+  defaultHomeDirName = ".t3",
+): string => {
   const safeRuntimeId = sanitizeWslRuntimeId(runtimeId);
   return [
     "set -eu",
-    runtimeParentAssignment(t3Home),
+    runtimeParentAssignment(t3Home, defaultHomeDirName),
     `current_runtime="$runtime_parent/${safeRuntimeId}"`,
     '[ -d "$runtime_parent" ] || exit 0',
     // Serialize pruning so backends cannot select and delete different previous caches.
@@ -803,10 +809,17 @@ const runWslRuntimeInstall = Effect.fn("desktop.wsl.runRuntimeInstall")(function
   archive: WslRuntimeArchive,
   t3Home: string | null,
   linuxArchivePath: string | null,
+  defaultHomeDirName = ".t3",
 ): Effect.fn.Return<WslRuntimeInstallOutcome, never, ChildProcessSpawner.ChildProcessSpawner> {
   const install = yield* runWslShell(
     distro,
-    buildWslRuntimeInstallScript(linuxArchivePath, archive.runtimeId, archive.sha256, t3Home),
+    buildWslRuntimeInstallScript(
+      linuxArchivePath,
+      archive.runtimeId,
+      archive.sha256,
+      t3Home,
+      defaultHomeDirName,
+    ),
     RUNTIME_INSTALL_TIMEOUT,
     { resolveNode: false },
   );
@@ -847,8 +860,9 @@ const installWslRuntimeFromHostCopy = Effect.fn("desktop.wsl.installRuntimeFromH
     archive: WslRuntimeArchive,
     t3Home: string | null,
     archiveBytes: Stream.Stream<Uint8Array, PlatformError.PlatformError>,
+    defaultHomeDirName = ".t3",
   ): Effect.fn.Return<PrepareWslRuntimeResult, never, ChildProcessSpawner.ChildProcessSpawner> {
-    const staged = yield* runWslRuntimeInstall(distro, archive, t3Home, null);
+    const staged = yield* runWslRuntimeInstall(distro, archive, t3Home, null, defaultHomeDirName);
     if (!staged.ok || parseWslRuntimeRoot(staged.stdout) !== null) {
       return toPrepareWslRuntimeResult(staged);
     }
@@ -889,7 +903,7 @@ const installWslRuntimeFromHostCopy = Effect.fn("desktop.wsl.installRuntimeFromH
         } as const;
       }
       return toPrepareWslRuntimeResult(
-        yield* runWslRuntimeInstall(distro, archive, t3Home, linuxArchivePath),
+        yield* runWslRuntimeInstall(distro, archive, t3Home, linuxArchivePath, defaultHomeDirName),
       );
     });
 
@@ -911,6 +925,7 @@ const prepareWslRuntimeImpl = Effect.fn("desktop.wsl.prepareRuntimeImpl")(functi
     distro: string | null,
     windowsPath: string,
   ) => Effect.Effect<Option.Option<string>>,
+  defaultHomeDirName = ".t3",
 ): Effect.fn.Return<
   PrepareWslRuntimeResult,
   never,
@@ -924,10 +939,17 @@ const prepareWslRuntimeImpl = Effect.fn("desktop.wsl.prepareRuntimeImpl")(functi
       archive,
       t3Home,
       fileSystem.stream(archive.windowsPath),
+      defaultHomeDirName,
     );
   }
   return toPrepareWslRuntimeResult(
-    yield* runWslRuntimeInstall(distro, archive, t3Home, linuxArchivePath.value),
+    yield* runWslRuntimeInstall(
+      distro,
+      archive,
+      t3Home,
+      linuxArchivePath.value,
+      defaultHomeDirName,
+    ),
   );
 });
 
@@ -935,10 +957,11 @@ const pruneWslRuntimesImpl = Effect.fn("desktop.wsl.pruneRuntimesImpl")(function
   distro: string | null,
   runtimeId: string,
   t3Home: string | null,
+  defaultHomeDirName = ".t3",
 ): Effect.fn.Return<void, never, ChildProcessSpawner.ChildProcessSpawner> {
   const result = yield* runWslShell(
     distro,
-    buildWslRuntimePruneScript(runtimeId, t3Home),
+    buildWslRuntimePruneScript(runtimeId, t3Home, defaultHomeDirName),
     RUNTIME_PRUNE_TIMEOUT,
     { resolveNode: false },
   );
@@ -1271,6 +1294,7 @@ export const layer = Layer.effect(
   DesktopWslEnvironment,
   Effect.gen(function* () {
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const defaultHomeDirName = getDesktopFlavorProfile(environment.flavor).defaultHomeDirName;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const fileSystem = yield* FileSystem.FileSystem;
     // Not Config: Windows variable names are case-insensitive only on the live process.env.
@@ -1331,13 +1355,13 @@ export const layer = Layer.effect(
       getDistroIp,
       prepareRuntime: Effect.fn("desktop.wsl.prepareRuntime")(function (distro, archive, t3Home) {
         return provideSpawner(
-          prepareWslRuntimeImpl(distro, archive, t3Home, windowsToWslPath).pipe(
+          prepareWslRuntimeImpl(distro, archive, t3Home, windowsToWslPath, defaultHomeDirName).pipe(
             Effect.provideService(FileSystem.FileSystem, fileSystem),
           ),
         );
       }),
       pruneRuntimes: Effect.fn("desktop.wsl.pruneRuntimes")(function (distro, runtimeId, t3Home) {
-        return provideSpawner(pruneWslRuntimesImpl(distro, runtimeId, t3Home));
+        return provideSpawner(pruneWslRuntimesImpl(distro, runtimeId, t3Home, defaultHomeDirName));
       }),
       probeRuntime: Effect.fn("desktop.wsl.probeRuntime")(function (distro) {
         return provideSpawner(probeWslRuntimeImpl(distro));

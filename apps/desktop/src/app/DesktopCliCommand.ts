@@ -19,6 +19,7 @@ import { pathSetup, readUserLoginShell } from "@t3tools/shared/shell";
 
 import * as DesktopCliShim from "./DesktopCliShim.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import { getDesktopFlavorProfile } from "./DesktopFlavor.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
 
 const { logInfo, logWarning } = makeComponentLogger("desktop-cli-command");
@@ -103,6 +104,7 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
+  const marker = DesktopCliShim.markerForFlavor(environment.flavor);
   const isOurLink = Effect.fn("DesktopCliCommand.isOurLink")(
     function* (link: string) {
       yield* fs.readLink(link);
@@ -110,7 +112,7 @@ export const make = Effect.gen(function* () {
       const info = yield* fs.stat(link);
       if (info.type !== "File" || Number(info.size) > 16_384) return false;
       const content = yield* fs.readFileString(link);
-      return content.includes(DesktopCliShim.MARKER);
+      return content.includes(marker);
     },
     Effect.orElseSucceed(() => false),
   );
@@ -123,7 +125,7 @@ export const make = Effect.gen(function* () {
       if (resolved !== ours) return false;
       const info = yield* fs.stat(candidate);
       if (info.type !== "File" || Number(info.size) > 16_384) return false;
-      return (yield* fs.readFileString(candidate)).includes(DesktopCliShim.MARKER);
+      return (yield* fs.readFileString(candidate)).includes(marker);
     },
     Effect.orElseSucceed(() => false),
   );
@@ -418,7 +420,13 @@ export const make = Effect.gen(function* () {
 
   const installOnFirstLaunch: DesktopCliCommand["Service"]["installOnFirstLaunch"] = Effect.gen(
     function* () {
-      if (!environment.isPackaged || (yield* exists(firstLaunchMarker))) return;
+      if (
+        !environment.isPackaged ||
+        !getDesktopFlavorProfile(environment.flavor).installCliOnFirstLaunch ||
+        (yield* exists(firstLaunchMarker))
+      ) {
+        return;
+      }
       // Mark first so a failed or removed install is never retried behind the user's back.
       yield* fs.writeFileString(firstLaunchMarker, "");
       if (!freshInstall) {

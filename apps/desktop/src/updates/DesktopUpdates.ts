@@ -31,6 +31,7 @@ import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import { getDesktopFlavorProfile } from "../app/DesktopFlavor.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
@@ -348,10 +349,14 @@ function getAutoUpdateDisabledReason(args: {
   appImage?: string | undefined;
   isDebPackage: boolean;
   disabledByEnv: boolean;
+  disabledByFlavor?: boolean;
   hasUpdateFeedConfig: boolean;
 }): string | null {
   if (args.policy.mode === "off") {
     return args.policy.message ?? "Updates are turned off on this machine.";
+  }
+  if (args.disabledByFlavor) {
+    return "Automatic updates are disabled in custom T3 Code Antigravity builds.";
   }
   if (!args.hasUpdateFeedConfig) {
     return "Automatic updates are not available because no update feed is configured.";
@@ -489,6 +494,7 @@ export const make = Effect.gen(function* () {
         appImage: Option.getOrUndefined(config.appImagePath),
         isDebPackage,
         disabledByEnv: config.disableAutoUpdate,
+        disabledByFlavor: getDesktopFlavorProfile(environment.flavor).disableAutoUpdates,
         hasUpdateFeedConfig: hasFeedConfig,
       }),
     );

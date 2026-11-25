@@ -4,6 +4,8 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
+import { getDesktopFlavorProfile, type DesktopFlavor } from "./DesktopFlavor.ts";
+
 export class DesktopUserDataInitializationError extends Schema.TaggedError<DesktopUserDataInitializationError>()(
   "DesktopUserDataInitializationError",
   {
@@ -36,14 +38,17 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
     readonly appDataDirectory: string;
     readonly isDevelopment: boolean;
     readonly platform: NodeJS.Platform;
+    readonly flavor?: DesktopFlavor;
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const profile = getDesktopFlavorProfile(input.flavor);
     const names = input.isDevelopment
-      ? { current: "t3code-dev", legacy: "T3 Code (Dev)" }
-      : { current: "t3code-v2", legacy: "T3 Code (Alpha)" };
+      ? { current: profile.userDataDirDev, legacy: profile.legacyUserDataDirDev }
+      : { current: profile.userDataDirProd, legacy: "T3 Code (Alpha)" };
     const destinationPath = path.join(input.appDataDirectory, names.current);
-    const legacyPath = path.join(input.appDataDirectory, names.legacy);
+    const legacyPath =
+      names.legacy !== null ? path.join(input.appDataDirectory, names.legacy) : null;
     const inspect = (resourcePath: string) =>
       fs
         .exists(resourcePath)
@@ -53,7 +58,10 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
           ),
         );
     if (input.isDevelopment) {
-      return (yield* inspect(legacyPath)) ? legacyPath : destinationPath;
+      return legacyPath !== null && (yield* inspect(legacyPath)) ? legacyPath : destinationPath;
+    }
+    if (!profile.migrateLegacyProfiles || legacyPath === null) {
+      return destinationPath;
     }
     // Chromium databases require their own profile for each running version.
     if (input.platform !== "win32") return destinationPath;

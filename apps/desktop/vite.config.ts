@@ -24,6 +24,11 @@ const publicConfigDefine = {
   __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
     repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
   ),
+  __T3CODE_DESKTOP_FLAVOR__: JSON.stringify(
+    process.env.T3CODE_DESKTOP_FLAVOR?.trim().toLowerCase() === "antigravity"
+      ? "antigravity"
+      : "default",
+  ),
 };
 
 export default defineConfig({

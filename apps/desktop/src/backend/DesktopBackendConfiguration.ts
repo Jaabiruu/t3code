@@ -22,6 +22,7 @@ import serverPackageJson from "../../../server/package.json" with { type: "json"
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopCliShim from "../app/DesktopCliShim.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import { getDesktopFlavorProfile } from "../app/DesktopFlavor.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
@@ -421,15 +422,30 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
       fatal: true,
     }) as const;
 
+  const resolveDefaultWslT3Home = Effect.fn("DesktopBackendConfiguration.resolveDefaultWslT3Home")(
+    function* (t3Home: string | null) {
+      if (t3Home !== null || environment.flavor !== "antigravity") {
+        return t3Home;
+      }
+      const userHome = yield* wslEnv.getUserHome(runningDistro);
+      const dirName = getDesktopFlavorProfile(environment.flavor).defaultHomeDirName;
+      return Option.match(userHome, {
+        onNone: () => null,
+        onSome: (home) => `${home.replace(/\/+$/, "")}/${dirName}`,
+      });
+    },
+  );
+
   if (input.runtimeArchive !== null) {
     // Staged runtimes bundle Node and node-pty; provider PATH discovery must not require them.
     // Probe first: the runtime cache lives under the login shell's T3CODE_HOME.
     const stagedProbe = yield* wslEnv.probeRuntime(runningDistro);
     if (stagedProbe.ok) {
+      const targetT3Home = yield* resolveDefaultWslT3Home(stagedProbe.t3Home);
       const runtime = yield* wslEnv.prepareRuntime(
         runningDistro,
         input.runtimeArchive,
-        stagedProbe.t3Home,
+        targetT3Home,
       );
       if (runtime.ok) {
         yield* wslServerTree.cleanupLegacy;
@@ -439,7 +455,7 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
           windowsEntryPath: environment.backendEntryPath,
           runtime: { kind: "executable", entryPath: `${runtime.linuxAppRoot}/t3` },
           resolvedPath: stagedProbe.resolvedPath,
-          t3Home: stagedProbe.t3Home,
+          t3Home: targetT3Home,
           runtimeId: input.runtimeArchive.runtimeId,
         } as const;
       }
@@ -476,6 +492,7 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
       : failedNodePty(nodePtyResult);
   }
 
+  const targetT3Home = yield* resolveDefaultWslT3Home(nodePtyResult.t3Home);
   return {
     _tag: "Ready",
     runningDistro,
@@ -486,7 +503,7 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
       linuxEntryPath: `${mounted.linuxAppRoot}/apps/server/dist/bin.mjs`,
     },
     resolvedPath: nodePtyResult.resolvedPath,
-    t3Home: nodePtyResult.t3Home,
+    t3Home: targetT3Home,
   } as const;
 });
 

@@ -5,12 +5,20 @@ import * as Option from "effect/Option";
 import * as Random from "effect/Random";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import {
+  BUILD_DESKTOP_FLAVOR,
+  getDesktopFlavorProfile,
+  type DesktopFlavor,
+} from "./DesktopFlavor.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
 
 // AppImage mounts change each run; the launcher must mount the image itself.
 const { logInfo, logWarning } = makeComponentLogger("desktop-cli-shim");
 
-export const MARKER = "Written by T3 Code: runs the desktop app's bundled t3 CLI.";
+export const markerForFlavor = (flavor: DesktopFlavor = BUILD_DESKTOP_FLAVOR): string =>
+  getDesktopFlavorProfile(flavor).cliShimMarker;
+
+export const MARKER = markerForFlavor("default");
 
 const SERVER_ENTRY = "apps/server/dist/bin.mjs";
 
@@ -31,8 +39,10 @@ export const renderCliShim = (input: {
   readonly target: CliShimTarget;
   readonly shimPath: string;
   readonly t3Home: string;
+  readonly marker?: string;
 }) => {
   const { target } = input;
+  const marker = input.marker ?? MARKER;
   if (target.kind === "windows") {
     const utf8 = [target.executable, target.entry, input.shimPath, input.t3Home].some((value) =>
       [...value].some((character) => character.codePointAt(0)! > 0x7f),
@@ -40,7 +50,7 @@ export const renderCliShim = (input: {
     const restore = utf8 ? ["chcp %t3_codepage% >nul"] : [];
     return [
       "@echo off",
-      `rem ${MARKER}`,
+      `rem ${marker}`,
       // Delayed expansion would rewrite `!name!` in paths and arguments.
       "setlocal EnableExtensions DisableDelayedExpansion",
       // Ctrl-C skips codepage restoration, so switch to UTF-8 only for non-ASCII install paths.
@@ -70,7 +80,7 @@ export const renderCliShim = (input: {
   }
   const header = [
     "#!/bin/sh",
-    `# ${MARKER}`,
+    `# ${marker}`,
     `export T3CODE_CLI_PATH=${shellWord(input.shimPath)}`,
     `home=${shellWord(input.t3Home)}`,
     'export T3CODE_HOME="${T3CODE_HOME:-$home}"',
@@ -137,12 +147,14 @@ export const renderCliShim = (input: {
   ].join("\n");
 };
 
-export const launcherPath = (environment: DesktopEnvironment.DesktopEnvironment["Service"]) =>
-  environment.path.join(
+export const launcherPath = (environment: DesktopEnvironment.DesktopEnvironment["Service"]) => {
+  const command = getDesktopFlavorProfile(environment.flavor).cliCommandName;
+  return environment.path.join(
     environment.baseDir,
     "bin",
-    environment.platform === "win32" ? "t3.cmd" : "t3",
+    environment.platform === "win32" ? `${command}.cmd` : command,
   );
+};
 
 export const install = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -162,11 +174,12 @@ export const install = Effect.gen(function* () {
         }),
         onNone: () => ({ kind: "direct" as const, executable: process.execPath, entry }),
       });
-  const content = renderCliShim({ target, shimPath, t3Home: environment.baseDir });
+  const marker = markerForFlavor(environment.flavor);
+  const content = renderCliShim({ target, shimPath, t3Home: environment.baseDir, marker });
 
   return yield* Effect.gen(function* () {
     const existing = yield* fs.readFileString(shimPath).pipe(Effect.option);
-    if (Option.isSome(existing) && !existing.value.includes(MARKER)) {
+    if (Option.isSome(existing) && !existing.value.includes(marker)) {
       yield* logWarning("leaving a t3 launcher the app did not write", { shimPath });
       return Option.none<string>();
     }

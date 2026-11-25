@@ -1,5 +1,7 @@
 import * as Option from "effect/Option";
 
+import { getDesktopFlavorProfile, type DesktopFlavor } from "./DesktopFlavor.ts";
+
 export type JoinPath = (first: string, ...segments: string[]) => string;
 
 function normalizeConfiguredBaseDir(t3Home: Option.Option<string>): Option.Option<string> {
@@ -14,9 +16,10 @@ export function resolveDesktopBaseDir(input: {
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
   readonly t3Home: Option.Option<string>;
+  readonly flavor?: DesktopFlavor;
 }): string {
   return Option.getOrElse(normalizeConfiguredBaseDir(input.t3Home), () =>
-    input.joinPath(input.homeDirectory, ".t3"),
+    input.joinPath(input.homeDirectory, getDesktopFlavorProfile(input.flavor).defaultHomeDirName),
   );
 }
 

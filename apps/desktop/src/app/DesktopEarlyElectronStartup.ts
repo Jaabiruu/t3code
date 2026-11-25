@@ -14,6 +14,11 @@ import {
   resolveDesktopStateDir,
   type JoinPath,
 } from "./DesktopStatePaths.ts";
+import {
+  BUILD_DESKTOP_FLAVOR,
+  getDesktopFlavorProfile,
+  type DesktopFlavor,
+} from "./DesktopFlavor.ts";
 
 interface EarlyDesktopSettingsInput {
   readonly env: NodeJS.ProcessEnv;
@@ -30,8 +35,13 @@ export interface EarlyLinuxElectronOptions {
   readonly passwordStore: LinuxPasswordStoreSwitch | null;
 }
 
-export const resolveLinuxDesktopEntryName = (isDevelopment: boolean): string =>
-  isDevelopment ? "com.t3tools.T3Code.Development.desktop" : "com.t3tools.T3Code.desktop";
+export const resolveLinuxDesktopEntryName = (
+  isDevelopment: boolean,
+  flavor: DesktopFlavor = BUILD_DESKTOP_FLAVOR,
+): string => {
+  const profile = getDesktopFlavorProfile(flavor);
+  return isDevelopment ? profile.linuxDesktopEntryDev : profile.linuxDesktopEntryProd;
+};
 
 const trimNonEmpty = (value: string | undefined): string | null => {
   const trimmed = value?.trim();
@@ -58,6 +68,7 @@ function resolveEarlyDesktopSettingsPath(input: {
     homeDirectory: input.homeDirectory,
     joinPath: input.joinPath,
     t3Home,
+    flavor: BUILD_DESKTOP_FLAVOR,
   });
   const stateDir = resolveDesktopStateDir({
     baseDir,

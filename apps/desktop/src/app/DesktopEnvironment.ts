@@ -14,6 +14,11 @@ import * as Path from "effect/Path";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
 import { resolveLinuxDesktopEntryName } from "./DesktopEarlyElectronStartup.ts";
+import {
+  BUILD_DESKTOP_FLAVOR,
+  getDesktopFlavorProfile,
+  type DesktopFlavor,
+} from "./DesktopFlavor.ts";
 import { resolveDesktopBaseDir, resolveDesktopStateDir } from "./DesktopStatePaths.ts";
 import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
 import type { OtlpProtocol } from "@t3tools/shared/observability";
@@ -35,10 +40,12 @@ export class DesktopEnvironment extends Context.Service<
   {
     readonly path: Path.Path;
     readonly dirname: string;
+    readonly flavor: DesktopFlavor;
     readonly platform: NodeJS.Platform;
     readonly processArch: string;
     readonly isPackaged: boolean;
     readonly isDevelopment: boolean;
+    readonly defaultBackendPort: number;
     readonly appVersion: string;
     readonly appPath: string;
     readonly resourcesPath: string;
@@ -85,8 +92,6 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "T3 Code";
-
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
   readonly appVersion: string;
@@ -101,12 +106,20 @@ function resolveDesktopAppStageLabel(input: {
 export function resolveDesktopAppBranding(input: {
   readonly isDevelopment: boolean;
   readonly appVersion: string;
+  readonly flavor?: DesktopFlavor;
 }): DesktopAppBranding {
   const stageLabel = resolveDesktopAppStageLabel(input);
+  const profile = getDesktopFlavorProfile(input.flavor);
+  const displayName =
+    profile.flavor === "antigravity"
+      ? input.isDevelopment || stageLabel === "Nightly"
+        ? `${profile.baseName} (${stageLabel})`
+        : profile.baseName
+      : `${profile.baseName} (${stageLabel})`;
   return {
-    baseName: APP_BASE_NAME,
+    baseName: profile.baseName,
     stageLabel,
-    displayName: `${APP_BASE_NAME} (${stageLabel})`,
+    displayName,
   };
 }
 
@@ -156,10 +169,13 @@ const make = Effect.fn("desktop.environment.make")(function* (
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
+  const flavor = BUILD_DESKTOP_FLAVOR;
+  const profile = getDesktopFlavorProfile(flavor);
   const baseDir = resolveDesktopBaseDir({
     homeDirectory,
     joinPath: path.join,
     t3Home: config.t3Home,
+    flavor,
   });
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
@@ -170,6 +186,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const branding = resolveDesktopAppBranding({
     isDevelopment,
     appVersion: input.appVersion,
+    flavor,
   });
   const displayName = branding.displayName;
   const stateDir = resolveDesktopStateDir({
@@ -187,10 +204,12 @@ const make = Effect.fn("desktop.environment.make")(function* (
   return DesktopEnvironment.of({
     path,
     dirname: input.dirname,
+    flavor,
     platform: input.platform,
     processArch: input.processArch,
     isPackaged: input.isPackaged,
     isDevelopment,
+    defaultBackendPort: profile.defaultBackendPort,
     appVersion: input.appVersion,
     appPath: input.appPath,
     resourcesPath,
@@ -228,9 +247,9 @@ const make = Effect.fn("desktop.environment.make")(function* (
     branding,
     displayName,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+      isDevelopment ? profile.appUserModelIdDev : profile.appUserModelIdProd,
     ),
-    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
+    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, flavor),
     linuxApplicationsDir,
     desktopLauncherPath: config.desktopLauncherPath,
     appImagePath: config.appImagePath,

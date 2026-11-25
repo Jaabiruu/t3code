@@ -12,20 +12,34 @@ import * as Scope from "effect/Scope";
 
 import * as Electron from "electron";
 
+import {
+  BUILD_DESKTOP_FLAVOR,
+  getDesktopFlavorProfile,
+  type DesktopFlavor,
+} from "../app/DesktopFlavor.ts";
+
 export const DESKTOP_HOST = "app";
-const DESKTOP_PRODUCTION_SCHEME = "t3code";
-const DESKTOP_DEVELOPMENT_SCHEME = "t3code-dev";
 
-export function getDesktopScheme(isDevelopment: boolean): string {
-  return isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME;
+export function getDesktopScheme(
+  isDevelopment: boolean,
+  flavor: DesktopFlavor = BUILD_DESKTOP_FLAVOR,
+): string {
+  const profile = getDesktopFlavorProfile(flavor);
+  return isDevelopment ? profile.protocolSchemeDev : profile.protocolSchemeProd;
 }
 
-export function getDesktopOrigin(isDevelopment: boolean): string {
-  return `${getDesktopScheme(isDevelopment)}://${DESKTOP_HOST}`;
+export function getDesktopOrigin(
+  isDevelopment: boolean,
+  flavor: DesktopFlavor = BUILD_DESKTOP_FLAVOR,
+): string {
+  return `${getDesktopScheme(isDevelopment, flavor)}://${DESKTOP_HOST}`;
 }
 
-export function getDesktopUrl(isDevelopment: boolean): string {
-  return `${getDesktopOrigin(isDevelopment)}/`;
+export function getDesktopUrl(
+  isDevelopment: boolean,
+  flavor: DesktopFlavor = BUILD_DESKTOP_FLAVOR,
+): string {
+  return `${getDesktopOrigin(isDevelopment, flavor)}/`;
 }
 
 export class ElectronProtocolRegistrationError extends Schema.TaggedError<ElectronProtocolRegistrationError>()(
@@ -109,9 +123,10 @@ function withContentSecurityPolicy(response: Response, policy: string): Response
 
 // Must run synchronously before Electron emits ready.
 function registerDesktopSchemePrivilegesSync(): void {
+  const profile = getDesktopFlavorProfile(BUILD_DESKTOP_FLAVOR);
   Electron.protocol.registerSchemesAsPrivileged([
     {
-      scheme: DESKTOP_PRODUCTION_SCHEME,
+      scheme: profile.protocolSchemeProd,
       privileges: {
         standard: true,
         secure: true,
@@ -123,7 +138,7 @@ function registerDesktopSchemePrivilegesSync(): void {
       },
     },
     {
-      scheme: DESKTOP_DEVELOPMENT_SCHEME,
+      scheme: profile.protocolSchemeDev,
       privileges: {
         standard: true,
         secure: true,

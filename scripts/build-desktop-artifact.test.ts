@@ -1979,3 +1979,32 @@ it.effect.skipIf(!symlinksSupported)("preserves relative links when replacing di
     assert.equal(yield* fs.readFileString(path.join(output, app, "Current")), "rebuilt-app");
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
+
+it.effect("configures an isolated Windows NSIS build for the antigravity flavor", () =>
+  Effect.gen(function* () {
+    const config = yield* createBuildConfig(
+      "win",
+      "nsis",
+      "0.1.11",
+      false,
+      false,
+      undefined,
+      undefined,
+      false,
+      "x64",
+      "antigravity",
+    );
+
+    assert.equal(config.appId, "com.jaabiruu.t3code.antigravity");
+    assert.equal(config.productName, "T3 Code Antigravity");
+    assert.equal(config.artifactName, "T3-Code-Antigravity-${version}-${arch}.${ext}");
+    assert.isNull(config.publish);
+    assert.deepStrictEqual(config.nsis, {
+      differentialPackage: false,
+      guid: "9e7c5a18-4f6b-4d2c-8b3e-6a1f2c9d0e4b",
+      shortcutName: "T3 Code Antigravity",
+      uninstallDisplayName: "T3 Code Antigravity 0.1.11",
+      include: "apps/desktop/resources/installer-antigravity.nsh",
+    });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
